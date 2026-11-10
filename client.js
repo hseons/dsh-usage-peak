@@ -17,6 +17,8 @@ window.__ModuleLoader__.load({
 
     const NS = 'dsh-usage-peak';
     const DATA_URL = '/plugin/dsh-usage-peak/data';
+    const DEFAULT_DAYS = 14;
+    const WINDOW_DAYS = [7, 14, 30];
 
     const dicts = {
       zh: {
@@ -46,21 +48,34 @@ window.__ModuleLoader__.load({
         'status.valley': '谷时',
         'status.switchIn': '距转',
 
+        'fmt.lang': 'zh',
+        'unit.calls': '次',
+        'unit.minute': '分',
+        'warn.unknownModel': '未识别的模型按 Flash 价计算',
+        'range.7': '近 7 天',
+        'range.14': '近 14 天',
+        'range.30': '近 30 天',
+
         'kpi.calls': '今日请求',
         'kpi.tokens': 'tokens',
         'kpi.hit': '缓存命中',
+        'kpi.hitHint': '命中价为未命中的 1/50',
         'kpi.peakShare': '峰时占比',
         'kpi.perCall': '平均每次',
+        'kpi.perDay': '日均',
         'kpi.balance': '余额',
         'kpi.today': '今日',
         'kpi.cache': '缓存',
         'kpi.out': '输出',
         'kpi.peakCost': '峰',
         'kpi.valleyCost': '谷',
+        'kpi.saving': '谷时更省',
+        'kpi.savingHint': '峰时按谷价计',
+        'kpi.windowSaving': '近 7 天可省',
 
         'chart.hours': '今日每小时花费',
         'chart.hoursHint': '橙 峰时 · 绿 谷时',
-        'chart.days': '近 14 天',
+        'chart.days': '每天花费',
         'chart.daysHint': '橙 峰时 · 绿 谷时',
 
         'cost.title': '今日花费构成',
@@ -104,21 +119,34 @@ window.__ModuleLoader__.load({
         'status.valley': 'Valley',
         'status.switchIn': 'in',
 
+        'fmt.lang': 'en',
+        'unit.calls': 'req',
+        'unit.minute': 'm',
+        'warn.unknownModel': 'Unknown models are priced as Flash',
+        'range.7': 'Last 7 days',
+        'range.14': 'Last 14 days',
+        'range.30': 'Last 30 days',
+
         'kpi.calls': 'Requests',
         'kpi.tokens': 'tokens',
         'kpi.hit': 'Cache hit',
+        'kpi.hitHint': 'hit costs 1/50 of miss',
         'kpi.peakShare': 'Peak share',
         'kpi.perCall': 'per request',
+        'kpi.perDay': 'per day',
         'kpi.balance': 'Balance',
         'kpi.today': 'today',
         'kpi.cache': 'cache',
         'kpi.out': 'output',
         'kpi.peakCost': 'peak',
         'kpi.valleyCost': 'valley',
+        'kpi.saving': 'Valley saving',
+        'kpi.savingHint': 'peak tokens at valley price',
+        'kpi.windowSaving': '7d saving',
 
         'chart.hours': 'Cost per hour today',
         'chart.hoursHint': 'orange peak · green valley',
-        'chart.days': 'Last 14 days',
+        'chart.days': 'Spend by day',
         'chart.daysHint': 'orange peak · green valley',
 
         'cost.title': 'Today by token type',
@@ -158,8 +186,16 @@ window.__ModuleLoader__.load({
         ? '—'
         : `¥${Number(value).toFixed(digits === undefined ? 2 : digits)}`;
 
-    function tokens(value) {
+    /** Token count with the locale's own magnitude words: 1.2 万 / 1.2K. */
+    function tokens(value, t) {
       if (!value) return '0';
+      const english = typeof t === 'function' && t('fmt.lang') === 'en';
+      if (english) {
+        if (value >= 1e9) return `${(value / 1e9).toFixed(2)}B`;
+        if (value >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
+        if (value >= 1e3) return `${Math.round(value / 1e3)}K`;
+        return String(Math.round(value));
+      }
       if (value >= 1e8) return `${(value / 1e8).toFixed(2)} 亿`;
       if (value >= 1e4) return `${(value / 1e4).toFixed(1)} 万`;
       return String(Math.round(value));
@@ -185,21 +221,23 @@ window.__ModuleLoader__.load({
     }
 
     /** Short numeric countdown: 27分 / 1:27 / 3:19. */
-    function countdown(ms) {
+    function countdown(ms, t) {
       const total = Math.max(0, Math.round(ms / 60000));
       const hours = Math.floor(total / 60);
       const minutes = total % 60;
-      return hours > 0 ? `${hours}:${String(minutes).padStart(2, '0')}` : `${minutes}分`;
+      if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}`;
+      return `${minutes}${typeof t === 'function' ? t('unit.minute') : '分'}`;
     }
 
     /* --------------------------------- data --------------------------------- */
 
-    function useFeed() {
+    function useFeed(days) {
+      const windowDays = days || 14;
       const [state, setState] = useState({ loading: true, error: null, data: null });
       const [tick, setTick] = useState(0);
 
       const load = useCallback((fresh) => {
-        const url = fresh ? `${DATA_URL}?fresh=1` : DATA_URL;
+        const url = `${DATA_URL}?days=${windowDays}${fresh ? '&fresh=1' : ''}`;
         fetch(url, { headers: { accept: 'application/json' } })
           .then((response) => {
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -212,7 +250,7 @@ window.__ModuleLoader__.load({
           .catch((error) =>
             setState((previous) => ({ loading: false, error: String(error && error.message), data: previous.data })),
           );
-      }, []);
+      }, [windowDays]);
 
       useEffect(() => {
         load(false);
@@ -303,11 +341,11 @@ window.__ModuleLoader__.load({
       const remain = data ? Math.max(0, data.now.nextAt - Date.now()) : 0;
       const switchText =
         data && remain > 30_000
-          ? `${countdown(remain)} ${peak ? t('widget.toValley') : t('widget.toPeak')}`
+          ? `${countdown(remain, t)} ${peak ? t('widget.toValley') : t('widget.toPeak')}`
           : t('widget.soon');
       const today = data && data.today ? data.today.cost : null;
       const tip = data
-        ? `${word} · ${t('widget.today')} ${yuan(today)} · ${tokens(data.today ? data.today.tokens : 0)} tokens · ${t('status.switchIn')} ${switchText}`
+        ? `${word} · ${t('widget.today')} ${yuan(today)} · ${tokens(data.today ? data.today.tokens : 0, t)} tokens · ${t('status.switchIn')} ${switchText}`
         : word;
 
       // The seat is the shell's own flex row: the root takes a whole line (see
@@ -429,7 +467,7 @@ window.__ModuleLoader__.load({
             'div',
             {
               key: entry.hour,
-              title: `${String(entry.hour).padStart(2, '0')}:00 · ${yuan(entry.cost)} · ${entry.calls} 次`,
+              title: `${String(entry.hour).padStart(2, '0')}:00 · ${yuan(entry.cost)} · ${entry.calls} ${props.t('unit.calls')}`,
               style: {
                 flex: 1,
                 display: 'flex',
@@ -476,7 +514,7 @@ window.__ModuleLoader__.load({
             h(
               'div',
               {
-                title: `${entry.day} · ${yuan(entry.cost)} · ${entry.calls} 次`,
+                title: `${entry.day} · ${yuan(entry.cost)} · ${entry.calls} ${props.t('unit.calls')}`,
                 style: {
                   flex: 1,
                   width: '100%',
@@ -591,13 +629,15 @@ window.__ModuleLoader__.load({
 
     function Dashboard(props) {
       const t = props.t;
-      const feed = useFeed();
+      const [days, setDays] = useState(props.days || 14);
+      const feed = useFeed(days);
       const data = feed.data;
+      const windowDays = (data && data.windowDays) || days;
       const peakNow = data ? data.now.peak : false;
       const remain = data ? Math.max(0, data.now.nextAt - Date.now()) : 0;
       const switchText =
         data && remain > 30_000
-          ? `${countdown(remain)} ${t(data.now.nextStatus === 'peak' ? 'widget.toPeak' : 'widget.toValley')}`
+          ? `${countdown(remain, t)} ${t(data.now.nextStatus === 'peak' ? 'widget.toPeak' : 'widget.toValley')}`
           : t('widget.soon');
 
       const body = [];
@@ -664,9 +704,29 @@ window.__ModuleLoader__.load({
                 data.ledger && typeof data.ledger.balance === 'number' ? yuan(data.ledger.balance) : '—',
               ),
             ),
-            h(Pill, null, `${today.calls || 0} 次 · ${tokens(today.tokens)} tokens`),
+            h(Pill, null, `${today.calls || 0} ${t('unit.calls')} · ${tokens(today.tokens, t)} tokens`),
           ),
         );
+
+        if (data.warnings && data.warnings.length) {
+          body.push(
+            h(
+              Card,
+              { key: 'warnings', style: { borderColor: C.peak, gap: 4 } },
+              data.warnings.map((warning, index) =>
+                h(
+                  'span',
+                  { key: index, style: { fontSize: 11.5, color: C.text2 } },
+                  typeof warning === 'string'
+                    ? warning
+                    : warning.code === 'unknown-model'
+                      ? `${t('warn.unknownModel')}: ${(warning.models || []).join(', ')}`
+                      : String(warning.code || warning),
+                ),
+              ),
+            ),
+          );
+        }
 
         body.push(
           h(
@@ -675,19 +735,25 @@ window.__ModuleLoader__.load({
             h(Kpi, {
               label: t('kpi.calls'),
               value: today.calls || 0,
-              hint: `${t('kpi.perCall')} ${tokens(today.avgTokens)}`,
+              hint: `${t('kpi.perCall')} ${tokens(today.avgTokens, t)}`,
             }),
             h(Kpi, {
               label: t('kpi.tokens'),
-              value: tokens(today.tokens),
-              hint: `${t('kpi.cache')} ${tokens(today.cacheTokens)} · ${t('kpi.out')} ${tokens(today.outputTokens)}`,
+              value: tokens(today.tokens, t),
+              hint: `${t('kpi.cache')} ${tokens(today.cacheTokens, t)} · ${t('kpi.out')} ${tokens(today.outputTokens, t)}`,
             }),
-            h(Kpi, { label: t('kpi.hit'), value: percent(today.hitRate), hint: '命中价 1/50' }),
+            h(Kpi, { label: t('kpi.hit'), value: percent(today.hitRate), hint: t('kpi.hitHint') }),
             h(Kpi, {
               label: t('kpi.peakShare'),
               value: percent(today.peakShare, 0),
               tone: (today.peakShare || 0) > 0.5 ? C.peak : C.valley,
               hint: `${t('kpi.peakCost')} ${yuan(today.peakCost)} · ${t('kpi.valleyCost')} ${yuan(today.valleyCost)}`,
+            }),
+            h(Kpi, {
+              label: t('kpi.saving'),
+              value: yuan(today.savingIfValley),
+              tone: C.valley,
+              hint: `${t('kpi.windowSaving')} ${yuan(data.week.savingIfValley)}`,
             }),
           ),
         );
@@ -700,7 +766,7 @@ window.__ModuleLoader__.load({
               Card,
               null,
               h(CardTitle, { title: t('chart.hours'), hint: t('chart.hoursHint') }),
-              h(HourChart, { hours: data.hours, nowHour: data.now.hour }),
+              h(HourChart, { hours: data.hours, nowHour: data.now.hour, t }),
               h(
                 'div',
                 { style: { display: 'flex', justifyContent: 'space-between', fontSize: 9.5, color: C.text3 } },
@@ -728,9 +794,9 @@ window.__ModuleLoader__.load({
             { key: 'days' },
             h(CardTitle, {
               title: t('chart.days'),
-              hint: `${t('kpi.today')} ${yuan(today.cost)} · ${t('kpi.perCall')} ${yuan(data.week.avgPerCall)}`,
+              hint: `${t(`range.${windowDays}`)} · ${t('kpi.perDay')} ${yuan(data.week.avgPerDay)} · ${t('kpi.perCall')} ${tokens(data.week.avgTokensPerCall, t)}`,
             }),
-            h(DayChart, { days: data.days }),
+            h(DayChart, { days: data.days, t }),
             h('span', { style: { fontSize: 9.5, color: C.text3 } }, t('chart.daysHint')),
           ),
         );
@@ -767,6 +833,29 @@ window.__ModuleLoader__.load({
             { style: { display: 'flex', flexDirection: 'column', gap: 1, flex: 1 } },
             h('h2', { style: { margin: 0, fontSize: 16, fontWeight: 600 } }, t('page.title')),
             h('span', { style: { fontSize: 11.5, color: C.text2 } }, t('page.subtitle')),
+          ),
+          h(
+            'div',
+            { style: { display: 'flex', gap: 2, padding: 2, borderRadius: 9, background: C.layer2, border: `1px solid ${C.border}` } },
+            [7, 14, 30].map((value) =>
+              h(
+                'button',
+                {
+                  key: value,
+                  onClick: () => setDays(value),
+                  style: {
+                    padding: '3px 10px',
+                    borderRadius: 7,
+                    border: 'none',
+                    background: windowDays === value ? C.layer1 : 'transparent',
+                    color: windowDays === value ? C.text : C.text3,
+                    cursor: 'pointer',
+                    fontSize: 11,
+                  },
+                },
+                t(`range.${value}`),
+              ),
+            ),
           ),
           h(
             'span',

@@ -14,10 +14,10 @@
 
 - **侧栏常驻胶囊**：`● 峰  ¥14.70 · 12.8M tok · 2:43 后转谷`，点一下打开完整面板。侧栏折叠时收成一个小圆点。
 - **峰谷状态**：当前时段、距离下次切换的倒计时、当前时段单价（缓存命中 / 全价输入 / 输出）。
-- **今日概况**：花费、请求数、tokens、缓存命中率、峰时花费占比、余额。
+- **今日概况**：花费、请求数、tokens、缓存命中率、峰时花费占比、**谷时更省**（把这些峰时用量挪到谷时能省下的钱）、余额。
 - **今日 24 小时分布**：每小时花费柱状，峰时与谷时用不同颜色，当前小时高亮。
 - **花费构成**：缓存命中 / 全价输入 / 输出 三段占比，直接看出钱花在哪。
-- **近 14 天趋势**：按天堆叠柱状，可对照峰时占比判断"贵在哪天"。
+- **近 7 / 14 / 30 天趋势**：右上角切换窗口，按天堆叠柱状，缺数据的日期补零，列数恒定；可对照峰时占比判断"贵在哪天"。
 - **按模型**：Flash / Pro 各自的请求数、tokens、花费。
 - **价目表**：当前时段那一行高亮，方便解释账单。
 
@@ -41,7 +41,9 @@
 
 日志是**多帧 zstd**，Node 自带的 `zlib.zstdDecompressSync` 只解第一帧，所以插件内部按 zstd magic 切帧、逐帧解压再拼接（不需要 `zstd` 命令行）。
 
-快照缓存 15 秒；面板上的「刷新」按钮会带 `?fresh=1` 强制重算。
+数据接口支持 `?days=7|14|30` 选择统计窗口（默认 14，白名单之外的取值回落到 14）；快照按窗口分别缓存 15 秒，面板上的「刷新」按钮会带 `?fresh=1` 强制重算。
+
+峰时单价恰为谷时 2 倍，所以「谷时更省」= 峰时花费 ÷ 2：它衡量的是这些峰时用量如果改在谷时发生能省多少，而不是已经省下的钱。
 
 ## 安装
 
@@ -80,7 +82,8 @@ A usage and cost dashboard for DeepSeek Harness. It reads the local session logs
 ![Sidebar pill: valley ¥17.10 · 170.3M tok · switching to peak in 13:56](assets/sidebar-pill.webp)
 
 - a persistent sidebar pill with peak/valley state, today's spend, tokens and the countdown to the next price switch;
-- a details page (Settings → Usage dashboard) with KPIs, an hourly breakdown, cost composition, a 14-day trend, a per-model table and the price list.
+- a details page (Settings → Usage dashboard) with KPIs, an hourly breakdown, cost composition, a 7/14/30-day trend switch, a per-model table and the price list;
+- a "valley saving" KPI: since peak costs exactly 2x valley, moving the same peak usage to valley time would have saved half of the peak spend.
 
 Pricing (`[valley, peak]`, CNY per million tokens): Flash cache-hit 0.02/0.04, miss 1/2, output 4/8; Pro cache-hit 0.15/0.30, miss 4.5/9, output 13.5/27. Peak hours are 09:00–12:00 and 14:00–18:00 Beijing time on weekdays; everything else is valley (half price).
 

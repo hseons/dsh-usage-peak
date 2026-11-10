@@ -18,7 +18,9 @@ const NS = 'dsh-usage-peak';
 const ROUTE_BASE = '/plugin/dsh-usage-peak';
 const SNAPSHOT_TTL_MS = 15_000;
 const BJ_OFFSET = 8 * 60 * 60 * 1000;
-const DAYS_SHOWN = 14;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_DAYS = 14;
+const WINDOW_DAYS = [7, 14, 30];
 const MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]); // zstd frame magic, little endian
 
 /** CNY per million tokens, [valley, peak]. */
@@ -27,22 +29,22 @@ const PRICING = [
   { id: 'pro', label: 'DeepSeek Pro', match: 'pro', hit: [0.15, 0.3], miss: [4.5, 9], out: [13.5, 27] },
 ];
 
-function priceFor(model) {
+export function priceFor(model) {
   const name = String(model || '').toLowerCase();
   if (name.includes('pro')) return PRICING[1];
   return PRICING[0];
 }
 
-function bjDate(ts) {
+export function bjDate(ts) {
   return new Date(ts + BJ_OFFSET);
 }
 
-function dayKey(ts) {
+export function dayKey(ts) {
   return bjDate(ts).toISOString().slice(0, 10);
 }
 
 /** Peak = Beijing Mon-Fri 09:00-12:00 and 14:00-18:00; everything else is valley (half price). */
-function isPeakAt(ts) {
+export function isPeakAt(ts) {
   const d = bjDate(ts);
   const dow = d.getUTCDay();
   if (dow === 0 || dow === 6) return false;
@@ -51,7 +53,7 @@ function isPeakAt(ts) {
 }
 
 /** Next tariff switch after `ts`, with the status it switches into. */
-function nextSwitch(ts) {
+export function nextSwitch(ts) {
   const d = bjDate(ts);
   const y = d.getUTCFullYear();
   const mo = d.getUTCMonth();
@@ -76,7 +78,7 @@ function nextSwitch(ts) {
  * Session logs are concatenated zstd frames; Node's zstd entry points stop after
  * the first frame. Split on the frame magic and stitch the frames back together.
  */
-function decodeSessionFile(file) {
+export function decodeSessionFile(file) {
   const buf = fs.readFileSync(file);
   const starts = [];
   let cursor = 0;
@@ -111,7 +113,7 @@ function decodeSessionFile(file) {
 }
 
 /** One turn per billed model request: { t, model, input, cache, output }. */
-function parseSessionTurns(text) {
+export function parseSessionTurns(text) {
   const turns = [];
   for (const line of text.split('\n')) {
     if (line.length < 2) continue;
@@ -141,9 +143,14 @@ function parseSessionTurns(text) {
 /* ------------------------------------------------------------------ */
 
 const fileCache = new Map(); // file -> { mtimeMs, size, turns }
-let snapshotCache = null;
+const snapshotCache = new Map(); // window days -> { builtAt, payload }
 
-function collectTurns() {
+export function normalizeDays(value) {
+  const days = Number(value);
+  return WINDOW_DAYS.includes(days) ? days : DEFAULT_DAYS;
+}
+
+export function collectTurns() {
   const root = path.join(os.homedir(), '.dsh', 'sessions');
   const turns = [];
   let workspaceDirs;
@@ -188,7 +195,7 @@ function collectTurns() {
   return turns;
 }
 
-function emptyDay(day) {
+export function emptyDay(day) {
   const hours = [];
   for (let hour = 0; hour < 24; hour += 1) hours.push({ hour, cost: 0, calls: 0 });
   return {
@@ -210,7 +217,7 @@ function emptyDay(day) {
   };
 }
 
-function addTurn(day, turn) {
+export function addTurn(day, turn) {
   const price = priceFor(turn.model);
   const peak = isPeakAt(turn.t);
   const offset = peak ? 1 : 0;
@@ -244,7 +251,7 @@ function addTurn(day, turn) {
   slot.tokens += turn.input + turn.cache + turn.output;
 }
 
-function readLedger() {
+export function readLedger() {
   const file = path.join(os.homedir(), '.dsh', '.dshw-usage.json');
   try {
     const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -263,9 +270,9 @@ function readLedger() {
   }
 }
 
-function shapeDay(day) {
+export function shapeDay(day) {
   const tokens = day.inputTokens + day.cacheTokens + day.outputTokens;
-  const billable = Math.max(1, day.cacheTokens + day.inputTokens);
+  const billable = day.cacheTokens + day.inputTokens;
   return {
     day: day.day,
     calls: day.calls,
@@ -279,8 +286,10 @@ function shapeDay(day) {
     costOut: round(day.costOut),
     peakCost: round(day.peakCost),
     valleyCost: round(day.valleyCost),
+    // Peak is exactly 2x valley, so moving these peak tokens to valley saves half.
+    savingIfValley: round(day.peakCost / 2),
     peakShare: day.cost > 0 ? day.peakCost / day.cost : 0,
-    hitRate: (day.cacheTokens + day.inputTokens) > 0 ? day.cacheTokens / billable : 0,
+    hitRate: billable > 0 ? day.cacheTokens / billable : 0,
     avgTokens: day.calls > 0 ? Math.round(tokens / day.calls) : 0,
     firstAt: day.firstAt,
     lastAt: day.lastAt,
@@ -288,57 +297,56 @@ function shapeDay(day) {
   };
 }
 
-function round(value) {
+export function round(value) {
   return Math.round(value * 10000) / 10000;
 }
 
-function buildSnapshot() {
-  const now = Date.now();
-  if (snapshotCache && now - snapshotCache.builtAt < SNAPSHOT_TTL_MS) return snapshotCache.payload;
+export function hoursOf(day) {
+  const midnight = Date.parse(`${day.day}T00:00:00Z`) - BJ_OFFSET;
+  return day.hours.map((bucket) => ({
+    hour: bucket.hour,
+    cost: round(bucket.cost),
+    calls: bucket.calls,
+    peak: isPeakAt(midnight + bucket.hour * 3600_000),
+  }));
+}
 
-  const turns = collectTurns();
-  const days = new Map();
-  let unknownModels = new Set();
+/**
+ * Pure aggregation over decoded turns.
+ *
+ * The window is a contiguous calendar range ending today (Beijing): days
+ * without any request are zero-filled so the chart keeps all its columns and
+ * "last N days" means the same thing everywhere.
+ */
+export function aggregateTurns(turns, options = {}) {
+  const now = Number.isFinite(options.now) ? options.now : Date.now();
+  const days = normalizeDays(options.days);
+  const byDay = new Map();
+  const unknownModels = new Set();
 
-  for (const turn of turns) {
-    if (!Number.isFinite(turn.t)) continue;
+  for (const turn of turns || []) {
+    if (!turn || !Number.isFinite(turn.t)) continue;
     const key = dayKey(turn.t);
-    let day = days.get(key);
+    let day = byDay.get(key);
     if (!day) {
       day = emptyDay(key);
-      days.set(key, day);
+      byDay.set(key, day);
     }
     addTurn(day, turn);
     if (!/flash|pro/i.test(turn.model)) unknownModels.add(turn.model);
   }
 
-  const ledger = readLedger();
-
-  const dayList = [...days.values()].sort((a, b) => a.day.localeCompare(b.day));
-  const window = dayList.slice(-DAYS_SHOWN).map((day) => {
+  const window = [];
+  for (let offset = days - 1; offset >= 0; offset -= 1) {
+    const key = dayKey(now - offset * DAY_MS);
+    const day = byDay.get(key) || emptyDay(key);
     const shaped = shapeDay(day);
-    const booked = ledger.history && ledger.history[day.day];
-    shaped.ledger = typeof booked === 'number' ? round(booked) : null;
-    shaped.hours = day.hours.map((bucket) => ({
-      hour: bucket.hour,
-      cost: round(bucket.cost),
-      calls: bucket.calls,
-      peak: isPeakAt(Date.parse(`${day.day}T00:00:00Z`) - BJ_OFFSET + bucket.hour * 3600_000),
-    }));
-    return shaped;
-  });
+    shaped.hours = hoursOf(day);
+    window.push(shaped);
+  }
 
-  const todayKey = dayKey(now);
-  const today = window.find((entry) => entry.day === todayKey) || null;
-  const todayHours = today ? today.hours : emptyDay(todayKey).hours.map((bucket) => ({
-    hour: bucket.hour,
-    cost: 0,
-    calls: 0,
-    peak: isPeakAt(Date.parse(`${todayKey}T00:00:00Z`) - BJ_OFFSET + bucket.hour * 3600_000),
-  }));
-
-  const last7 = window.slice(-7);
-  const week = last7.reduce(
+  const today = window[window.length - 1];
+  const week = window.slice(-7).reduce(
     (acc, entry) => ({
       cost: acc.cost + entry.cost,
       calls: acc.calls + entry.calls,
@@ -347,14 +355,11 @@ function buildSnapshot() {
       costCache: acc.costCache + entry.costCache,
       costMiss: acc.costMiss + entry.costMiss,
       costOut: acc.costOut + entry.costOut,
+      savingIfValley: acc.savingIfValley + entry.savingIfValley,
       days: acc.days + 1,
     }),
-    { cost: 0, calls: 0, tokens: 0, peakCost: 0, costCache: 0, costMiss: 0, costOut: 0, days: 0 },
+    { cost: 0, calls: 0, tokens: 0, peakCost: 0, costCache: 0, costMiss: 0, costOut: 0, savingIfValley: 0, days: 0 },
   );
-
-  const switchPoint = nextSwitch(now);
-  const peakNow = isPeakAt(now);
-  const currentPrice = PRICING[0];
 
   const models = PRICING.map((price) => {
     let calls = 0;
@@ -370,13 +375,56 @@ function buildSnapshot() {
     return { id: price.id, label: price.label, calls, cost: round(cost), tokens };
   });
 
+  return {
+    windowDays: days,
+    today,
+    hours: today ? today.hours : [],
+    window,
+    week: {
+      cost: round(week.cost),
+      calls: week.calls,
+      tokens: week.tokens,
+      peakCost: round(week.peakCost),
+      costCache: round(week.costCache),
+      costMiss: round(week.costMiss),
+      costOut: round(week.costOut),
+      savingIfValley: round(week.savingIfValley),
+      peakShare: week.cost > 0 ? week.peakCost / week.cost : 0,
+      avgPerDay: week.days > 0 ? round(week.cost / week.days) : 0,
+      avgTokensPerCall: week.calls > 0 ? Math.round(week.tokens / week.calls) : 0,
+    },
+    models,
+    warnings: unknownModels.size > 0 ? [{ code: 'unknown-model', models: [...unknownModels] }] : [],
+  };
+}
+
+export function buildSnapshot(options = {}) {
+  const now = Number.isFinite(options.now) ? options.now : Date.now();
+  const days = normalizeDays(options.days);
+  const cached = snapshotCache.get(days);
+  if (cached && !options.fresh && now - cached.builtAt < SNAPSHOT_TTL_MS) return cached.payload;
+
+  const agg = aggregateTurns(collectTurns(), { now, days });
+  const ledger = readLedger();
+  if (ledger.ok) {
+    for (const entry of agg.window) {
+      const booked = ledger.history && ledger.history[entry.day];
+      entry.ledger = typeof booked === 'number' ? round(booked) : null;
+    }
+  }
+
+  const switchPoint = nextSwitch(now);
+  const peakNow = isPeakAt(now);
+  const currentPrice = PRICING[0];
+
   const payload = {
     ok: true,
     generatedAt: now,
     tz: 'Asia/Shanghai',
+    windowDays: days,
     now: {
       ts: now,
-      day: todayKey,
+      day: dayKey(now),
       peak: peakNow,
       hour: bjDate(now).getUTCHours(),
       minutesIntoHour: bjDate(now).getUTCMinutes(),
@@ -388,22 +436,11 @@ function buildSnapshot() {
         out: currentPrice.out[peakNow ? 1 : 0],
       },
     },
-    today,
-    hours: todayHours,
-    days: window,
-    week: {
-      cost: round(week.cost),
-      calls: week.calls,
-      tokens: week.tokens,
-      peakCost: round(week.peakCost),
-      costCache: round(week.costCache),
-      costMiss: round(week.costMiss),
-      costOut: round(week.costOut),
-      peakShare: week.cost > 0 ? week.peakCost / week.cost : 0,
-      avgPerDay: week.days > 0 ? round(week.cost / week.days) : 0,
-      avgPerCall: week.calls > 0 ? Math.round(week.tokens / week.calls) : 0,
-    },
-    models,
+    today: agg.today,
+    hours: agg.hours,
+    days: agg.window,
+    week: agg.week,
+    models: agg.models,
     pricing: PRICING.map((price) => ({
       id: price.id,
       label: price.label,
@@ -412,10 +449,10 @@ function buildSnapshot() {
       out: price.out,
     })),
     ledger,
-    warnings: unknownModels.size > 0 ? [`未识别的模型按 Flash 价计算: ${[...unknownModels].join(', ')}`] : [],
+    warnings: agg.warnings,
   };
 
-  snapshotCache = { builtAt: now, payload };
+  snapshotCache.set(days, { builtAt: now, payload });
   return payload;
 }
 
@@ -486,9 +523,10 @@ export function apply(ctx) {
         return;
       }
       const url = new URL(req.url || '/', 'http://127.0.0.1');
-      if (url.searchParams.get('fresh') === '1' || url.searchParams.get('fresh') === 'true') snapshotCache = null;
+      const fresh = url.searchParams.get('fresh') === '1' || url.searchParams.get('fresh') === 'true';
+      const days = normalizeDays(url.searchParams.get('days'));
       try {
-        sendJson(res, 200, buildSnapshot());
+        sendJson(res, 200, buildSnapshot({ days, fresh }));
       } catch (error) {
         sendJson(res, 500, { ok: false, error: String((error && error.stack) || error) });
       }

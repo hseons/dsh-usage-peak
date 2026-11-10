@@ -6,5 +6,5 @@ url: https://github.com/hhse/dsh-usage-peak
 name: hhse/dsh-usage-peak
 category: usage
 description:
-  en: 'Peak/valley pricing and spend dashboard for DeepSeek Harness: a sidebar pill plus a details page.'
-  zh: 'DeepSeek Harness 用量峰谷仪表盘：侧栏胶囊常显示峰谷、今日花费与 tokens，设置页看 24 小时与 14 天趋势。'
+  en: 'Peak/valley pricing and spend dashboard for DeepSeek Harness: sidebar pill, 7/14/30-day windows, valley-saving estimate and cost composition.'
+  zh: 'DeepSeek Harness 用量峰谷仪表盘：侧栏胶囊常显示峰谷、今日花费与 tokens，设置页看 24 小时与 7/14/30 天趋势、谷时更省与花费构成。'
