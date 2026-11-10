@@ -14,7 +14,11 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 
+import { CALENDAR_YEARS, OFF_DAYS, WORKDAYS, hasCalendar, yearOf } from './holidays.js';
+
 const NS = 'dsh-usage-peak';
+const REPO_URL = 'https://github.com/hhse/dsh-usage-peak';
+const VERSION = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version;
 const ROUTE_BASE = '/plugin/dsh-usage-peak';
 const SNAPSHOT_TTL_MS = 15_000;
 const BJ_OFFSET = 8 * 60 * 60 * 1000;
@@ -43,11 +47,18 @@ export function dayKey(ts) {
   return bjDate(ts).toISOString().slice(0, 10);
 }
 
-/** Peak = Beijing Mon-Fri 09:00-12:00 and 14:00-18:00; everything else is valley (half price). */
+/**
+ * Peak = Beijing Mon-Fri 09:00-12:00 and 14:00-18:00; everything else is valley
+ * (half price). Public holidays are valley all day, makeup workdays (including
+ * a Saturday/Sunday) follow the weekday windows.
+ */
 export function isPeakAt(ts) {
+  const key = dayKey(ts);
+  if (OFF_DAYS.has(key)) return false;
   const d = bjDate(ts);
   const dow = d.getUTCDay();
-  if (dow === 0 || dow === 6) return false;
+  const weekend = dow === 0 || dow === 6;
+  if (weekend && !WORKDAYS.has(key)) return false;
   const minutes = d.getUTCHours() * 60 + d.getUTCMinutes();
   return (minutes >= 540 && minutes < 720) || (minutes >= 840 && minutes < 1080);
 }
@@ -60,8 +71,10 @@ export function nextSwitch(ts) {
   const da = d.getUTCDate();
   for (let k = 0; k < 9; k += 1) {
     const probe = new Date(Date.UTC(y, mo, da + k));
+    const key = probe.toISOString().slice(0, 10);
+    if (OFF_DAYS.has(key)) continue;
     const dow = probe.getUTCDay();
-    if (dow === 0 || dow === 6) continue;
+    if ((dow === 0 || dow === 6) && !WORKDAYS.has(key)) continue;
     for (const hour of [9, 12, 14, 18]) {
       const at = Date.UTC(probe.getUTCFullYear(), probe.getUTCMonth(), probe.getUTCDate(), hour, 0, 0) - BJ_OFFSET;
       if (at > ts) return { at, status: hour === 9 || hour === 14 ? 'peak' : 'valley' };
@@ -289,6 +302,7 @@ export function shapeDay(day) {
     // Peak is exactly 2x valley, so moving these peak tokens to valley saves half.
     savingIfValley: round(day.peakCost / 2),
     peakShare: day.cost > 0 ? day.peakCost / day.cost : 0,
+    holiday: OFF_DAYS.get(day.day) || null,
     hitRate: billable > 0 ? day.cacheTokens / billable : 0,
     avgTokens: day.calls > 0 ? Math.round(tokens / day.calls) : 0,
     firstAt: day.firstAt,
@@ -309,6 +323,16 @@ export function hoursOf(day) {
     calls: bucket.calls,
     peak: isPeakAt(midnight + bucket.hour * 3600_000),
   }));
+}
+
+/** Calendar years touched by the window that have no holiday data yet. */
+function missingCalendarYears(window) {
+  const years = new Set();
+  for (const entry of window) {
+    const year = yearOf(entry.day);
+    if (!hasCalendar(year)) years.add(year);
+  }
+  return years.size > 0 ? [{ code: 'calendar-missing', years: [...years] }] : [];
 }
 
 /**
@@ -394,7 +418,10 @@ export function aggregateTurns(turns, options = {}) {
       avgTokensPerCall: week.calls > 0 ? Math.round(week.tokens / week.calls) : 0,
     },
     models,
-    warnings: unknownModels.size > 0 ? [{ code: 'unknown-model', models: [...unknownModels] }] : [],
+    warnings: [
+      ...(unknownModels.size > 0 ? [{ code: 'unknown-model', models: [...unknownModels] }] : []),
+      ...missingCalendarYears(window),
+    ],
   };
 }
 
@@ -421,6 +448,9 @@ export function buildSnapshot(options = {}) {
     ok: true,
     generatedAt: now,
     tz: 'Asia/Shanghai',
+    version: VERSION,
+    repo: REPO_URL,
+    calendar: { years: CALENDAR_YEARS, holidays: OFF_DAYS.size, workdays: WORKDAYS.size },
     windowDays: days,
     now: {
       ts: now,

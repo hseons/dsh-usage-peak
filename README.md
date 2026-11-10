@@ -20,6 +20,8 @@
 - **近 7 / 14 / 30 天趋势**：右上角切换窗口，按天堆叠柱状，缺数据的日期补零，列数恒定；可对照峰时占比判断"贵在哪天"。
 - **按模型**：Flash / Pro 各自的请求数、tokens、花费。
 - **价目表**：当前时段那一行高亮，方便解释账单。
+- **节假日与调休**：按国务院办公厅公布的安排判断——法定节假日全天谷时，调休上班的周末按工作日峰谷计算；当前覆盖 2026 年，缺失年份会在面板给出提示并回落到周一至周五规则。
+- **页脚**：GitHub 仓库链接（可顺手点个 Star）、当前版本号与日历覆盖年份。
 
 设置页里的入口是「用量仪表盘」，侧栏胶囊就是同一份数据的浓缩版。
 
@@ -32,7 +34,9 @@
 | DeepSeek Flash | 0.02 / 0.04 | 1 / 2 | 4 / 8 |
 | DeepSeek Pro | 0.15 / 0.30 | 4.5 / 9 | 13.5 / 27 |
 
-峰时 = 周一至周五 09:00–12:00、14:00–18:00（北京时间）；其余时间、周末与节假日为谷时，单价减半。
+峰时 = 工作日 09:00–12:00、14:00–18:00（北京时间）；其余时间、周末与法定节假日为谷时，单价减半。调休上班日（包括周末）按工作日的峰谷窗口计算。
+
+节假日数据在 [`holidays.js`](holidays.js)，来源为[国务院办公厅 2026 年放假安排通知](https://www.gov.cn/zhengce/zhengceku/202511/content_7047091.htm)，并与 [holiday-cn](https://github.com/NateScarlet/holiday-cn) 交叉核对。新一年安排公布后，补一组日期并把年份加进 `CALENDAR_YEARS` 即可。
 
 ## 数据来源
 
@@ -82,6 +86,8 @@ A usage and cost dashboard for DeepSeek Harness. It reads the local session logs
 ![Sidebar pill: valley ¥17.10 · 170.3M tok · switching to peak in 13:56](assets/sidebar-pill.webp)
 
 - a persistent sidebar pill with peak/valley state, today's spend, tokens and the countdown to the next price switch;
+- China public holidays and makeup workdays: holidays are valley all day, makeup weekend workdays follow the weekday windows (2026 calendar shipped; missing years fall back to Mon-Fri with a visible warning);
+- a footer with the GitHub repository link, the running version and the covered calendar years;
 - a details page (Settings → Usage dashboard) with KPIs, an hourly breakdown, cost composition, a 7/14/30-day trend switch, a per-model table and the price list;
 - a "valley saving" KPI: since peak costs exactly 2x valley, moving the same peak usage to valley time would have saved half of the peak spend.
 

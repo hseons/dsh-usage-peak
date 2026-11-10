@@ -41,6 +41,48 @@ test('isPeakAt covers the four weekday windows and nothing else', () => {
   assert.equal(isPeakAt(bj(2026, 11, 8, 15, 0)), false);
 });
 
+test('public holidays are valley all day, makeup workdays follow weekday hours', () => {
+  // 2026 National Day: Oct 1 (Thu) is a public holiday.
+  assert.equal(isPeakAt(bj(2026, 10, 1, 10, 0)), false);
+  assert.equal(isPeakAt(bj(2026, 10, 7, 15, 0)), false);
+  // Spring Festival makeup: Feb 14 is a Saturday but a working day.
+  assert.equal(isPeakAt(bj(2026, 2, 14, 10, 0)), true);
+  assert.equal(isPeakAt(bj(2026, 2, 14, 13, 0)), false);
+  // New Year makeup: Jan 4 is a Sunday but a working day.
+  assert.equal(isPeakAt(bj(2026, 1, 4, 10, 0)), true);
+  // A plain weekend stays valley.
+  assert.equal(isPeakAt(bj(2026, 11, 7, 10, 0)), false);
+});
+
+test('nextSwitch skips holiday blocks and honors makeup workdays', () => {
+  // Wednesday Sep 30 2026 evening: Oct 1-7 are holidays, next peak is Oct 8.
+  const afterNationalDay = nextSwitch(bj(2026, 9, 30, 19, 0));
+  assert.equal(afterNationalDay.at, bj(2026, 10, 8, 9, 0));
+  assert.equal(afterNationalDay.status, 'peak');
+
+  // Saturday Sep 19: Sunday Sep 20 is a makeup workday, so it is the next peak.
+  const makeup = nextSwitch(bj(2026, 9, 19, 10, 0));
+  assert.equal(makeup.at, bj(2026, 9, 20, 9, 0));
+  assert.equal(makeup.status, 'peak');
+});
+
+test('aggregateTurns tags holiday days in the window', () => {
+  const now = bj(2026, 10, 7, 12, 0);
+  const agg = aggregateTurns([], { now, days: 7 });
+  assert.equal(agg.window[0].day, '2026-10-01');
+  assert.equal(agg.window[0].holiday, '国庆节');
+  assert.equal(agg.window[6].holiday, '国庆节');
+  assert.deepEqual(agg.warnings, []);
+});
+
+test('years without calendar data fall back to weekdays and warn', () => {
+  const now = bj(2027, 1, 5, 12, 0);
+  // 2027-10-01 is a Friday; without data the weekday rule marks it peak.
+  assert.equal(isPeakAt(bj(2027, 10, 1, 10, 0)), true);
+  const agg = aggregateTurns([], { now, days: 7 });
+  assert.deepEqual(agg.warnings, [{ code: 'calendar-missing', years: [2027] }]);
+});
+
 test('nextSwitch walks to the next boundary and reports the target status', () => {
   const lunch = nextSwitch(bj(2026, 11, 9, 12, 30));
   assert.equal(lunch.status, 'peak');

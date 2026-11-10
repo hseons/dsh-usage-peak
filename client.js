@@ -52,6 +52,9 @@ window.__ModuleLoader__.load({
         'unit.calls': '次',
         'unit.minute': '分',
         'warn.unknownModel': '未识别的模型按 Flash 价计算',
+        'warn.calendarMissing': '以下年份还没有节假日数据，峰谷按周一至周五计算：',
+        'footer.calendar': '峰谷已计入节假日与调休：',
+        'footer.star': '给个 Star',
         'range.7': '近 7 天',
         'range.14': '近 14 天',
         'range.30': '近 30 天',
@@ -123,6 +126,9 @@ window.__ModuleLoader__.load({
         'unit.calls': 'req',
         'unit.minute': 'm',
         'warn.unknownModel': 'Unknown models are priced as Flash',
+        'warn.calendarMissing': 'No holiday data for these years, peak hours fall back to Mon-Fri:',
+        'footer.calendar': 'Peak hours include holidays and makeup workdays:',
+        'footer.star': 'Star it',
         'range.7': 'Last 7 days',
         'range.14': 'Last 14 days',
         'range.30': 'Last 30 days',
@@ -514,7 +520,7 @@ window.__ModuleLoader__.load({
             h(
               'div',
               {
-                title: `${entry.day} · ${yuan(entry.cost)} · ${entry.calls} ${props.t('unit.calls')}`,
+                title: `${entry.day}${entry.holiday ? ` · ${entry.holiday}` : ''} · ${yuan(entry.cost)} · ${entry.calls} ${props.t('unit.calls')}`,
                 style: {
                   flex: 1,
                   width: '100%',
@@ -721,7 +727,9 @@ window.__ModuleLoader__.load({
                     ? warning
                     : warning.code === 'unknown-model'
                       ? `${t('warn.unknownModel')}: ${(warning.models || []).join(', ')}`
-                      : String(warning.code || warning),
+                      : warning.code === 'calendar-missing'
+                        ? `${t('warn.calendarMissing')} ${(warning.years || []).join(' / ')}`
+                        : String(warning.code || warning),
                 ),
               ),
             ),
@@ -880,6 +888,70 @@ window.__ModuleLoader__.load({
           ),
         ),
         body,
+        h(
+          'footer',
+          {
+            style: {
+              marginTop: 2,
+              paddingTop: 10,
+              borderTop: `1px solid ${C.border}`,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 10,
+              flexWrap: 'wrap',
+              fontSize: 10.5,
+              color: C.text3,
+            },
+          },
+          h(
+            'span',
+            null,
+            data && data.calendar && data.calendar.years && data.calendar.years.length
+              ? `${t('footer.calendar')} ${data.calendar.years.join(' / ')}`
+              : '',
+          ),
+          h(
+            'div',
+            { style: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' } },
+            h(
+              'a',
+              {
+                href: (data && data.repo) || 'https://github.com/hhse/dsh-usage-peak',
+                target: '_blank',
+                rel: 'noopener noreferrer',
+                title: 'https://github.com/hhse/dsh-usage-peak',
+                style: {
+                  color: C.text2,
+                  textDecoration: 'none',
+                  fontWeight: 500,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 5,
+                },
+              },
+              '⭐',
+              'github.com/hhse/dsh-usage-peak',
+              h('span', { style: { color: C.peak, fontWeight: 600 } }, `· ${t('footer.star')}`),
+            ),
+            data && data.version
+              ? h(
+                  'span',
+                  {
+                    style: {
+                      padding: '1px 6px',
+                      borderRadius: 6,
+                      border: `1px solid ${C.border}`,
+                      background: C.layer2,
+                      color: C.text2,
+                      fontVariantNumeric: 'tabular-nums',
+                    },
+                  },
+                  `v${data.version}`,
+                )
+              : null,
+          ),
+        ),
       );
     }
 

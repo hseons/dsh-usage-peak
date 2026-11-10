@@ -1,8 +1,8 @@
 {
   "name": "dsh-usage-peak",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "type": "module",
-  "description": "DeepSeek Harness 用量峰谷仪表盘：峰/谷时段、今日花费与 tokens、7/14/30 天窗口、缓存命中、谷时更省与花费构成，侧栏常驻胶囊 + 设置页详情。",
+  "description": "DeepSeek Harness 用量峰谷仪表盘：峰/谷时段（含节假日与调休）、今日花费与 tokens、7/14/30 天窗口、缓存命中、谷时更省，侧栏常驻胶囊 + 设置页详情。",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -12,6 +12,7 @@
   "files": [
     "index.js",
     "client.js",
+    "holidays.js",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
