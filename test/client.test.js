@@ -10,7 +10,7 @@ function helpers(storage = {}) {
   const context = { window: { localStorage: storage, dispatchEvent: (event) => events.push(event) }, CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } }, C: { error: 'red', peak: 'amber', text3: 'gray' }, DATA_URL: '/data', DEFAULT_DAYS: 14 };
   const start = source.indexOf("    const PREFS_KEY =");
   const stop = source.indexOf('    function useFeed(', start);
-  vm.runInNewContext(source.slice(start, stop) + '\nthis.api = { validatePrefs, readPrefs, savePrefs, alertState, feedUrl, requestGate, tint };', context);
+  vm.runInNewContext(source.slice(start, stop) + '\nthis.api = { validatePrefs, readPrefs, savePrefs, alertState, feedUrl, requestGate, tint, pillStatus };', context);
   return { ...context.api, events };
 }
 const plain = (value) => JSON.parse(JSON.stringify(value));
@@ -72,6 +72,12 @@ test('client data and CSV URLs encode project identity and preserve scope', () =
   assert.equal(api.feedUrl('/data', 7, project, true), `/data?days=7&project=${encodeURIComponent(project)}&fresh=1`);
   assert.equal(`${api.feedUrl('/export.csv', 30, project)}&scope=projects`, `/export.csv?days=30&project=${encodeURIComponent(project)}&scope=projects`);
   assert.equal(api.feedUrl('/data', 14, ''), '/data?days=14');
+});
+
+test('client alert prefix keeps the peak/valley countdown visible', () => {
+  const api = helpers();
+  assert.equal(api.pillStatus(true, '2:43 后转谷'), '⚠ 2:43 后转谷');
+  assert.equal(api.pillStatus(false, '2:43 后转谷'), '2:43 后转谷');
 });
 
 test('client request generation guard rejects old filters, refreshes, and unmount results', () => {

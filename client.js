@@ -388,6 +388,12 @@ window.__ModuleLoader__.load({
       return `${base}?days=${days || DEFAULT_DAYS}${project ? `&project=${encodeURIComponent(project)}` : ''}${fresh ? '&fresh=1' : ''}`;
     }
 
+    // Keep the peak/valley countdown visible in the pill; the warning is an
+    // accent plus a prefix, never a replacement for the status text.
+    function pillStatus(alertActive, switchText) {
+      return alertActive ? `⚠ ${switchText}` : switchText;
+    }
+
     // Generation guard rejects old filter responses and older same-filter reloads.
     function requestGate() {
       let key = null;
@@ -516,7 +522,7 @@ window.__ModuleLoader__.load({
       const walletTip =
         wallet && wallet.balance !== null
           ? `${t('kpi.balance')} ${yuan(wallet.balance)}${walletText ? ` · ${walletText}` : ''}`
-          : '';
+          : walletText;
       const tip = data
         ? `${word} · ${t('widget.today')} ${yuan(today)} · ${tokens(data.today ? data.today.tokens : 0, t)} tokens · ${t('status.switchIn')} ${switchText}${walletTip ? ` · ${walletTip}` : ''}`
         : word;
@@ -571,7 +577,7 @@ window.__ModuleLoader__.load({
                   textOverflow: 'ellipsis',
                 },
               },
-              data ? (walletAlert ? `⚠ ${alert.budgetExceeded ? t('alerts.exceeded') : runway(wallet && wallet.runwayDays, t)}` : switchText) : '',
+              data ? pillStatus(walletAlert, switchText) : '',
             ),
           );
 
