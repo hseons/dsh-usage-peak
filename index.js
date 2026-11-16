@@ -125,8 +125,52 @@ export function decodeSessionFile(file) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+/** Session header: reads `cwd` from the first `type:"session"` record. */
+export function parseSessionMeta(text) {
+  const head = String(text || '').slice(0, 8192);
+  for (const line of head.split('\n')) {
+    if (!line.includes('"session"')) continue;
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (record && record.type === 'session') {
+      return { cwd: typeof record.cwd === 'string' && record.cwd.trim() ? record.cwd : null };
+    }
+  }
+  return { cwd: null };
+}
+
+/**
+ * Project identity for a session directory.
+ *
+ * The session log's absolute `cwd` is authoritative. Older/foreign logs without
+ * a header fall back to the workspace directory slug, which hex-escapes some
+ * bytes (`~5FAE~`); decode what we can and use the path as the display name.
+ */
+export function projectInfo(cwd, dirName) {
+  if (typeof cwd === 'string' && cwd.trim()) {
+    const clean = cwd.trim().replace(/[\\/]+$/, '') || cwd.trim();
+    return { key: clean, name: path.basename(clean) || clean, path: clean };
+  }
+  const body = String(dirName || '').replace(/^--|--$/g, '');
+  const decoded = body
+    .replace(/~([0-9a-fA-F]{4})~/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    .split('-')
+    .filter(Boolean)
+    .join('/');
+  const label = decoded || String(dirName || 'unknown');
+  return {
+    key: `slug:${dirName || 'unknown'}`,
+    name: label,
+    path: label.startsWith('/') ? label : `/${label}`,
+  };
+}
+
 /** One turn per billed model request: { t, model, input, cache, output }. */
-export function parseSessionTurns(text) {
+export function parseSessionTurns(text, project) {
   const turns = [];
   for (const line of text.split('\n')) {
     if (line.length < 2) continue;
@@ -140,13 +184,15 @@ export function parseSessionTurns(text) {
     const usage = record.data && record.data.usage;
     if (!usage) continue;
     const model = (record.data.message && record.data.message.source && record.data.message.source.model) || 'unknown';
-    turns.push({
+    const turn = {
       t: record.time,
       model,
       input: usage.inputTokens || 0,
       cache: usage.cacheReadTokens || 0,
       output: usage.outputTokens || 0,
-    });
+    };
+    if (project) turn.project = project;
+    turns.push(turn);
   }
   return turns;
 }
@@ -195,7 +241,8 @@ export function collectTurns() {
       if (!entry || entry.mtimeMs !== stat.mtimeMs || entry.size !== stat.size) {
         let parsed = [];
         try {
-          parsed = parseSessionTurns(decodeSessionFile(file));
+          const text = decodeSessionFile(file);
+          parsed = parseSessionTurns(text, projectInfo(parseSessionMeta(text).cwd, workspace.name));
         } catch {
           parsed = [];
         }
@@ -262,6 +309,8 @@ export function addTurn(day, turn) {
   slot.calls += 1;
   slot.cost += cost;
   slot.tokens += turn.input + turn.cache + turn.output;
+
+  return { cost, peak, tokens: turn.input + turn.cache + turn.output };
 }
 
 export function readLedger() {
@@ -335,6 +384,24 @@ function missingCalendarYears(window) {
   return years.size > 0 ? [{ code: 'calendar-missing', years: [...years] }] : [];
 }
 
+export const RUNWAY_WARN_DAYS = 7;
+export const RUNWAY_LOW_DAYS = 3;
+
+/** How many days the current balance lasts at the recent daily burn rate. */
+export function walletSummary(balance, avgPerDay) {
+  const hasBalance = typeof balance === 'number' && Number.isFinite(balance);
+  const perDay = typeof avgPerDay === 'number' && Number.isFinite(avgPerDay) && avgPerDay > 0 ? avgPerDay : 0;
+  const runwayDays = hasBalance && perDay > 0 ? Math.max(0, balance / perDay) : null;
+  const level =
+    runwayDays === null ? 'unknown' : runwayDays < RUNWAY_LOW_DAYS ? 'low' : runwayDays < RUNWAY_WARN_DAYS ? 'warn' : 'ok';
+  return {
+    balance: hasBalance ? round(balance) : null,
+    avgPerDay: round(perDay),
+    runwayDays: runwayDays === null ? null : round(runwayDays),
+    level,
+  };
+}
+
 /**
  * Pure aggregation over decoded turns.
  *
@@ -346,18 +413,43 @@ export function aggregateTurns(turns, options = {}) {
   const now = Number.isFinite(options.now) ? options.now : Date.now();
   const days = normalizeDays(options.days);
   const byDay = new Map();
+  const byProject = new Map();
   const unknownModels = new Set();
+  const firstKey = dayKey(now - (days - 1) * DAY_MS);
+  const todayKey = dayKey(now);
+  let attributedCost = 0;
 
   for (const turn of turns || []) {
     if (!turn || !Number.isFinite(turn.t)) continue;
     const key = dayKey(turn.t);
+    if (key < firstKey || key > todayKey) continue;
     let day = byDay.get(key);
     if (!day) {
       day = emptyDay(key);
       byDay.set(key, day);
     }
-    addTurn(day, turn);
+    const priced = addTurn(day, turn);
     if (!/flash|pro/i.test(turn.model)) unknownModels.add(turn.model);
+    if (turn.project && turn.project.key) {
+      let project = byProject.get(turn.project.key);
+      if (!project) {
+        project = {
+          key: turn.project.key,
+          name: turn.project.name,
+          path: turn.project.path,
+          calls: 0,
+          cost: 0,
+          peakCost: 0,
+          tokens: 0,
+        };
+        byProject.set(turn.project.key, project);
+      }
+      project.calls += 1;
+      project.cost += priced.cost;
+      project.tokens += priced.tokens;
+      if (priced.peak) project.peakCost += priced.cost;
+      attributedCost += priced.cost;
+    }
   }
 
   const window = [];
@@ -399,11 +491,21 @@ export function aggregateTurns(turns, options = {}) {
     return { id: price.id, label: price.label, calls, cost: round(cost), tokens };
   });
 
+  const projects = [...byProject.values()]
+    .map((project) => ({
+      ...project,
+      cost: round(project.cost),
+      peakCost: round(project.peakCost),
+      share: round(attributedCost > 0 ? project.cost / attributedCost : 0),
+    }))
+    .sort((a, b) => b.cost - a.cost || a.name.localeCompare(b.name));
+
   return {
     windowDays: days,
     today,
     hours: today ? today.hours : [],
     window,
+    projects,
     week: {
       cost: round(week.cost),
       calls: week.calls,
@@ -469,7 +571,9 @@ export function buildSnapshot(options = {}) {
     today: agg.today,
     hours: agg.hours,
     days: agg.window,
+    projects: agg.projects,
     week: agg.week,
+    wallet: walletSummary(ledger.ok ? ledger.balance : null, agg.week.avgPerDay),
     models: agg.models,
     pricing: PRICING.map((price) => ({
       id: price.id,
@@ -484,6 +588,68 @@ export function buildSnapshot(options = {}) {
 
   snapshotCache.set(days, { builtAt: now, payload });
   return payload;
+}
+
+/* ------------------------------------------------------------------ */
+/* CSV export                                                          */
+/* ------------------------------------------------------------------ */
+
+const CSV_FORMULA = /^[=+\-@\t\r]/;
+
+/** RFC 4180 cell, with a guard against spreadsheet formula injection. */
+export function csvEscape(value) {
+  let text = value === null || value === undefined ? '' : String(value);
+  if (typeof value === 'string' && CSV_FORMULA.test(text)) text = `'${text}`;
+  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function csvTable(rows) {
+  return `${rows.map((row) => row.map(csvEscape).join(',')).join('\n')}\n`;
+}
+
+export function buildCsv(payload, scope = 'days') {
+  if (scope === 'projects') {
+    const rows = [['project', 'path', 'calls', 'tokens', 'cost', 'peak_cost', 'share']];
+    for (const project of (payload && payload.projects) || []) {
+      rows.push([project.name, project.path, project.calls, project.tokens, project.cost, project.peakCost, project.share]);
+    }
+    return csvTable(rows);
+  }
+  const rows = [
+    [
+      'day',
+      'calls',
+      'tokens',
+      'cost',
+      'cost_cache',
+      'cost_miss',
+      'cost_out',
+      'peak_cost',
+      'valley_cost',
+      'saving_if_valley',
+      'peak_share',
+      'hit_rate',
+      'holiday',
+    ],
+  ];
+  for (const day of (payload && payload.days) || []) {
+    rows.push([
+      day.day,
+      day.calls,
+      day.tokens,
+      day.cost,
+      day.costCache,
+      day.costMiss,
+      day.costOut,
+      day.peakCost,
+      day.valleyCost,
+      day.savingIfValley,
+      round(day.peakShare),
+      round(day.hitRate),
+      day.holiday || '',
+    ]);
+  }
+  return csvTable(rows);
 }
 
 /* ------------------------------------------------------------------ */
@@ -563,7 +729,36 @@ export function apply(ctx) {
     },
   });
 
+  const disposeExport = register({
+    kind: 'exact',
+    path: `${ROUTE_BASE}/export.csv`,
+    handler: async (req, res) => {
+      if (trustCheck(req, res)) return;
+      if ((req.method || 'GET').toUpperCase() !== 'GET') {
+        sendJson(res, 405, { ok: false, error: 'method not allowed' });
+        return;
+      }
+      const url = new URL(req.url || '/', 'http://127.0.0.1');
+      const days = normalizeDays(url.searchParams.get('days'));
+      const scope = url.searchParams.get('scope') === 'projects' ? 'projects' : 'days';
+      try {
+        const snapshot = buildSnapshot({ days, fresh: true });
+        const body = Buffer.from(`\uFEFF${buildCsv(snapshot, scope)}`, 'utf8');
+        res.writeHead(200, {
+          'Content-Type': 'text/csv; charset=utf-8',
+          'Content-Disposition': `attachment; filename="dsh-usage-${dayKey(Date.now())}-${days}d-${scope}.csv"`,
+          'Cache-Control': 'no-store',
+          'Content-Length': String(body.length),
+        });
+        res.end(body);
+      } catch (error) {
+        sendJson(res, 500, { ok: false, error: String((error && error.stack) || error) });
+      }
+    },
+  });
+
   ctx.effect(() => () => {
     dispose();
+    disposeExport();
   }, `${NS}: dashboard route`);
 }

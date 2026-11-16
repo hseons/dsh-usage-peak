@@ -17,6 +17,7 @@ window.__ModuleLoader__.load({
 
     const NS = 'dsh-usage-peak';
     const DATA_URL = '/plugin/dsh-usage-peak/data';
+    const EXPORT_URL = '/plugin/dsh-usage-peak/export.csv';
     const DEFAULT_DAYS = 14;
     const WINDOW_DAYS = [7, 14, 30];
 
@@ -75,6 +76,30 @@ window.__ModuleLoader__.load({
         'kpi.saving': '谷时更省',
         'kpi.savingHint': '峰时按谷价计',
         'kpi.windowSaving': '近 7 天可省',
+        'kpi.runway': '余额可撑',
+        'kpi.runwayHint': '余额 ÷ 近 7 天日均',
+        'unit.day': '天',
+        'wallet.avg': '日均',
+        'wallet.alert': '余额仅够',
+        'wallet.runway': '可撑',
+        'wallet.warn': '余额偏低',
+        'wallet.low': '余额紧张',
+
+        'projects.title': '按项目',
+        'projects.hint': '按花费排序',
+        'projects.name': '项目',
+        'projects.calls': '请求',
+        'projects.tokens': 'tokens',
+        'projects.cost': '花费',
+        'projects.share': '占比',
+        'projects.empty': '这个窗口内还没有项目数据',
+        'models.title': '按模型',
+        'models.hint': '窗口内',
+        'models.empty': '暂无请求',
+        'export.csv': '导出 CSV',
+        'export.projects': '项目 CSV',
+        'export.daysTitle': '导出每日数据 CSV',
+        'export.projectsTitle': '导出项目数据 CSV',
 
         'chart.hours': '今日每小时花费',
         'chart.hoursHint': '橙 峰时 · 绿 谷时',
@@ -149,6 +174,30 @@ window.__ModuleLoader__.load({
         'kpi.saving': 'Valley saving',
         'kpi.savingHint': 'peak tokens at valley price',
         'kpi.windowSaving': '7d saving',
+        'kpi.runway': 'Runway',
+        'kpi.runwayHint': 'balance ÷ 7-day average',
+        'unit.day': 'd',
+        'wallet.avg': 'avg',
+        'wallet.alert': 'Balance covers',
+        'wallet.runway': 'covers',
+        'wallet.warn': 'Low balance',
+        'wallet.low': 'Balance critical',
+
+        'projects.title': 'By project',
+        'projects.hint': 'sorted by spend',
+        'projects.name': 'Project',
+        'projects.calls': 'req',
+        'projects.tokens': 'tokens',
+        'projects.cost': 'Spend',
+        'projects.share': 'Share',
+        'projects.empty': 'No project data in this window',
+        'models.title': 'By model',
+        'models.hint': 'in window',
+        'models.empty': 'No requests yet',
+        'export.csv': 'Export CSV',
+        'export.projects': 'Projects CSV',
+        'export.daysTitle': 'Export daily CSV',
+        'export.projectsTitle': 'Export project CSV',
 
         'chart.hours': 'Cost per hour today',
         'chart.hoursHint': 'orange peak · green valley',
@@ -183,6 +232,7 @@ window.__ModuleLoader__.load({
       cache: 'var(--dsw-alias-state-business-primary)',
       miss: 'var(--dsw-alias-state-warn-primary)',
       out: 'var(--dsw-alias-brand-primary)',
+      error: 'var(--dsw-alias-state-error-primary)',
     };
 
     /* ------------------------------ formatting ------------------------------ */
@@ -233,6 +283,13 @@ window.__ModuleLoader__.load({
       const minutes = total % 60;
       if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}`;
       return `${minutes}${typeof t === 'function' ? t('unit.minute') : '分'}`;
+    }
+
+    /** Runway in days: 2.9 / 7 / <1 / 120. */
+    function runway(value, t) {
+      if (value === null || value === undefined || Number.isNaN(value)) return '—';
+      const days = value <= 0 ? '0' : value < 1 ? '<1' : value >= 100 ? String(Math.round(value)) : value.toFixed(1).replace(/\.0$/, '');
+      return `${days} ${t('unit.day')}`;
     }
 
     /* --------------------------------- data --------------------------------- */
@@ -287,6 +344,7 @@ window.__ModuleLoader__.load({
       return h(
         'span',
         {
+          title: props.title,
           style: {
             display: 'inline-flex',
             alignItems: 'center',
@@ -344,14 +402,23 @@ window.__ModuleLoader__.load({
       const tone = loading ? C.text3 : peak ? C.peak : C.valley;
       const word = loading ? t('widget.loading') : peak ? t('widget.peak') : t('widget.valley');
       const short = word.slice(0, 1) === '峰' ? '峰' : word.slice(0, 1) === '谷' ? '谷' : word;
+      const wallet = data && data.wallet ? data.wallet : null;
+      const walletLevel = wallet ? wallet.level : 'unknown';
+      const walletAlert = walletLevel === 'low' || walletLevel === 'warn';
+      const walletTone = walletLevel === 'low' ? C.error : walletLevel === 'warn' ? C.peak : C.text3;
+      const walletText = walletAlert ? `${t('wallet.alert')} ${runway(wallet.runwayDays, t)}` : '';
       const remain = data ? Math.max(0, data.now.nextAt - Date.now()) : 0;
       const switchText =
         data && remain > 30_000
           ? `${countdown(remain, t)} ${peak ? t('widget.toValley') : t('widget.toPeak')}`
           : t('widget.soon');
       const today = data && data.today ? data.today.cost : null;
+      const walletTip =
+        wallet && wallet.balance !== null
+          ? `${t('kpi.balance')} ${yuan(wallet.balance)}${walletText ? ` · ${walletText}` : ''}`
+          : '';
       const tip = data
-        ? `${word} · ${t('widget.today')} ${yuan(today)} · ${tokens(data.today ? data.today.tokens : 0, t)} tokens · ${t('status.switchIn')} ${switchText}`
+        ? `${word} · ${t('widget.today')} ${yuan(today)} · ${tokens(data.today ? data.today.tokens : 0, t)} tokens · ${t('status.switchIn')} ${switchText}${walletTip ? ` · ${walletTip}` : ''}`
         : word;
 
       // The seat is the shell's own flex row: the root takes a whole line (see
@@ -366,7 +433,8 @@ window.__ModuleLoader__.load({
         height: 21,
         padding: '0 8px',
         borderRadius: 999,
-        border: `1px solid ${C.border}`,
+        border: `1px solid ${walletAlert ? walletTone : C.border}`,
+        background: walletAlert ? `${walletTone}14` : 'transparent',
         fontSize: 10.5,
         lineHeight: '19px',
         color: C.text2,
@@ -392,7 +460,19 @@ window.__ModuleLoader__.load({
               h('span', { style: { color: C.text3, marginLeft: 2 } }, 'tok'),
             ),
             h(Sep),
-            h('span', { style: { color: C.text3, fontVariantNumeric: 'tabular-nums', overflow: 'hidden', textOverflow: 'ellipsis' } }, data ? switchText : ''),
+            h(
+              'span',
+              {
+                style: {
+                  color: walletAlert ? walletTone : C.text3,
+                  fontWeight: walletAlert ? 600 : 400,
+                  fontVariantNumeric: 'tabular-nums',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                },
+              },
+              data ? (walletAlert ? `⚠ ${runway(wallet.runwayDays, t)}` : switchText) : '',
+            ),
           );
 
       return h('div', { ...rootProps, title: tip, onClick: open || undefined, style: rootStyle }, pill);
@@ -425,7 +505,14 @@ window.__ModuleLoader__.load({
         'header',
         { style: { display: 'flex', alignItems: 'baseline', gap: 8, justifyContent: 'space-between' } },
         h('h3', { style: { margin: 0, fontSize: 12.5, fontWeight: 600, color: C.text } }, props.title),
-        props.hint ? h('span', { style: { fontSize: 10.5, color: C.text3 } }, props.hint) : null,
+        props.hint || props.action
+          ? h(
+              'span',
+              { style: { display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 10.5, color: C.text3 } },
+              props.hint ? h('span', null, props.hint) : null,
+              props.action || null,
+            )
+          : null,
       );
     }
 
@@ -631,6 +718,118 @@ window.__ModuleLoader__.load({
       );
     }
 
+    const cellHead = (align) => ({
+      padding: '3px 8px',
+      textAlign: align,
+      fontWeight: 500,
+      color: C.text3,
+      borderBottom: `1px solid ${C.border}`,
+      whiteSpace: 'nowrap',
+      position: 'sticky',
+      top: 0,
+      background: C.layer1,
+      zIndex: 1,
+    });
+
+    const cellBody = {
+      padding: '4px 8px',
+      color: C.text2,
+      whiteSpace: 'nowrap',
+      fontVariantNumeric: 'tabular-nums',
+    };
+
+    function ProjectTable(props) {
+      const { projects, t } = props;
+      if (!projects || !projects.length) {
+        return h('span', { style: { fontSize: 11.5, color: C.text3 } }, t('projects.empty'));
+      }
+      const head = [t('projects.name'), t('projects.calls'), t('projects.tokens'), t('projects.cost'), t('projects.share')];
+      return h(
+        'div',
+        { style: { maxHeight: 214, overflowY: 'auto', margin: '0 -2px' } },
+        h(
+          'table',
+          { style: { width: '100%', borderCollapse: 'collapse', fontSize: 11.5 } },
+          h(
+            'thead',
+            null,
+            h(
+              'tr',
+              null,
+              head.map((label, index) =>
+                h('th', { key: label, style: cellHead(index === 0 ? 'left' : 'right') }, label),
+              ),
+            ),
+          ),
+          h(
+            'tbody',
+            null,
+            projects.map((project) =>
+              h(
+                'tr',
+                { key: project.key, title: project.path || project.name },
+                h(
+                  'td',
+                  {
+                    style: {
+                      ...cellBody,
+                      color: C.text,
+                      maxWidth: 220,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                    },
+                  },
+                  project.name,
+                ),
+                h('td', { style: { ...cellBody, textAlign: 'right' } }, project.calls),
+                h('td', { style: { ...cellBody, textAlign: 'right' } }, tokens(project.tokens, t)),
+                h('td', { style: { ...cellBody, textAlign: 'right' } }, yuan(project.cost)),
+                h('td', { style: { ...cellBody, textAlign: 'right', color: C.text3 } }, percent(project.share, 0)),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    function ModelTable(props) {
+      const { models, t } = props;
+      const rows = (models || []).filter((model) => model.calls > 0);
+      if (!rows.length) {
+        return h('span', { style: { fontSize: 11.5, color: C.text3 } }, t('models.empty'));
+      }
+      const head = [t('price.model'), t('projects.calls'), t('projects.tokens'), t('projects.cost')];
+      return h(
+        'table',
+        { style: { width: '100%', borderCollapse: 'collapse', fontSize: 11.5 } },
+        h(
+          'thead',
+          null,
+          h(
+            'tr',
+            null,
+            head.map((label, index) =>
+              h('th', { key: label, style: cellHead(index === 0 ? 'left' : 'right') }, label),
+            ),
+          ),
+        ),
+        h(
+          'tbody',
+          null,
+          rows.map((model) =>
+            h(
+              'tr',
+              { key: model.id },
+              h('td', { style: { ...cellBody, color: C.text } }, model.label),
+              h('td', { style: { ...cellBody, textAlign: 'right' } }, model.calls),
+              h('td', { style: { ...cellBody, textAlign: 'right' } }, tokens(model.tokens, t)),
+              h('td', { style: { ...cellBody, textAlign: 'right' } }, yuan(model.cost)),
+            ),
+          ),
+        ),
+      );
+    }
+
     /* -------------------------------- settings ------------------------------- */
 
     function Dashboard(props) {
@@ -640,6 +839,11 @@ window.__ModuleLoader__.load({
       const data = feed.data;
       const windowDays = (data && data.windowDays) || days;
       const peakNow = data ? data.now.peak : false;
+      const wallet = data && data.wallet ? data.wallet : null;
+      const walletLevel = wallet ? wallet.level : 'unknown';
+      const walletAlert = walletLevel === 'low' || walletLevel === 'warn';
+      const walletTone = walletLevel === 'low' ? C.error : walletLevel === 'warn' ? C.peak : C.text3;
+      const runwayLabel = walletAlert ? t('wallet.alert') : t('wallet.runway');
       const remain = data ? Math.max(0, data.now.nextAt - Date.now()) : 0;
       const switchText =
         data && remain > 30_000
@@ -702,13 +906,26 @@ window.__ModuleLoader__.load({
             ),
             h(
               Pill,
-              null,
+              {
+                style: walletAlert ? { borderColor: walletTone, background: `${walletTone}1a` } : null,
+                title:
+                  wallet && wallet.avgPerDay
+                    ? `${t('wallet.avg')} ${yuan(wallet.avgPerDay)} · ${t('kpi.runwayHint')}`
+                    : undefined,
+              },
               `${t('kpi.balance')} `,
               h(
                 'span',
                 { style: { color: C.text } },
                 data.ledger && typeof data.ledger.balance === 'number' ? yuan(data.ledger.balance) : '—',
               ),
+              wallet && wallet.runwayDays !== null
+                ? h(
+                    'span',
+                    { style: { color: walletTone, fontWeight: 600 } },
+                    ` · ${runwayLabel} ${runway(wallet.runwayDays, t)}`,
+                  )
+                : null,
             ),
             h(Pill, null, `${today.calls || 0} ${t('unit.calls')} · ${tokens(today.tokens, t)} tokens`),
           ),
@@ -740,6 +957,15 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { key: 'kpi', style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 } },
+            h(Kpi, {
+              label: t('kpi.runway'),
+              value: wallet && wallet.runwayDays !== null ? runway(wallet.runwayDays, t) : '—',
+              tone: walletAlert ? walletTone : C.text,
+              hint:
+                wallet && wallet.balance !== null
+                  ? `${t('kpi.balance')} ${yuan(wallet.balance)} · ${t('wallet.avg')} ${yuan(wallet.avgPerDay)}`
+                  : t('kpi.runwayHint'),
+            }),
             h(Kpi, {
               label: t('kpi.calls'),
               value: today.calls || 0,
@@ -806,6 +1032,38 @@ window.__ModuleLoader__.load({
             }),
             h(DayChart, { days: data.days, t }),
             h('span', { style: { fontSize: 9.5, color: C.text3 } }, t('chart.daysHint')),
+          ),
+        );
+
+        body.push(
+          h(
+            'div',
+            { key: 'breakdown', style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1.5fr) minmax(0, 1fr)', gap: 10 } },
+            h(
+              Card,
+              null,
+              h(CardTitle, {
+                title: t('projects.title'),
+                hint: t('projects.hint'),
+                action: h(
+                  'a',
+                  {
+                    href: `${EXPORT_URL}?days=${windowDays}&scope=projects`,
+                    download: '',
+                    title: t('export.projectsTitle'),
+                    style: { color: C.cache, textDecoration: 'none', fontWeight: 500 },
+                  },
+                  t('export.projects'),
+                ),
+              }),
+              h(ProjectTable, { projects: data.projects, t }),
+            ),
+            h(
+              Card,
+              null,
+              h(CardTitle, { title: t('models.title'), hint: t('models.hint') }),
+              h(ModelTable, { models: data.models, t }),
+            ),
           ),
         );
 
@@ -885,6 +1143,24 @@ window.__ModuleLoader__.load({
               },
             },
             t('page.refresh'),
+          ),
+          h(
+            'a',
+            {
+              href: `${EXPORT_URL}?days=${windowDays}`,
+              download: '',
+              title: t('export.daysTitle'),
+              style: {
+                padding: '4px 12px',
+                borderRadius: 8,
+                border: `1px solid ${C.border}`,
+                background: C.layer1,
+                color: C.text,
+                textDecoration: 'none',
+                fontSize: 11.5,
+              },
+            },
+            t('export.csv'),
           ),
         ),
         body,

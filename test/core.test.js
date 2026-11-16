@@ -7,13 +7,18 @@ import zlib from 'node:zlib';
 
 import {
   aggregateTurns,
+  buildCsv,
+  csvEscape,
   decodeSessionFile,
   emptyDay,
   isPeakAt,
   nextSwitch,
   normalizeDays,
+  parseSessionMeta,
   parseSessionTurns,
   priceFor,
+  projectInfo,
+  walletSummary,
 } from '../index.js';
 
 /** Beijing wall clock -> epoch ms. */
@@ -75,12 +80,27 @@ test('aggregateTurns tags holiday days in the window', () => {
   assert.deepEqual(agg.warnings, []);
 });
 
+test('2027 holidays and makeup workdays follow the 2027 State Council notice', () => {
+  // Spring Festival: Feb 5-13 off; Jan 31 and Feb 14 (Sundays) are workdays.
+  assert.equal(isPeakAt(bj(2027, 2, 5, 10, 0)), false);
+  assert.equal(isPeakAt(bj(2027, 2, 13, 10, 0)), false);
+  assert.equal(isPeakAt(bj(2027, 1, 31, 10, 0)), true);
+  assert.equal(isPeakAt(bj(2027, 2, 14, 10, 0)), true);
+  // National Day: Oct 1-7 off, Oct 8 is a normal Friday, Oct 9 is makeup.
+  assert.equal(isPeakAt(bj(2027, 10, 1, 10, 0)), false);
+  assert.equal(isPeakAt(bj(2027, 10, 8, 10, 0)), true);
+  assert.equal(isPeakAt(bj(2027, 10, 9, 10, 0)), true);
+  // The full 2027 calendar no longer raises the missing-calendar warning.
+  const agg = aggregateTurns([], { now: bj(2027, 10, 7, 12, 0), days: 7 });
+  assert.deepEqual(agg.warnings, []);
+});
+
 test('years without calendar data fall back to weekdays and warn', () => {
-  const now = bj(2027, 1, 5, 12, 0);
-  // 2027-10-01 is a Friday; without data the weekday rule marks it peak.
-  assert.equal(isPeakAt(bj(2027, 10, 1, 10, 0)), true);
+  const now = bj(2028, 1, 5, 12, 0);
+  // 2028-01-05 is a Wednesday; without data the weekday rule marks it peak.
+  assert.equal(isPeakAt(bj(2028, 1, 5, 10, 0)), true);
   const agg = aggregateTurns([], { now, days: 7 });
-  assert.deepEqual(agg.warnings, [{ code: 'calendar-missing', years: [2027] }]);
+  assert.deepEqual(agg.warnings, [{ code: 'calendar-missing', years: [2028] }]);
 });
 
 test('nextSwitch walks to the next boundary and reports the target status', () => {
@@ -223,4 +243,119 @@ test('window edges stay stable across a day boundary', () => {
   assert.equal(agg.window[0].day, '2026-11-04');
   assert.equal(agg.window.length, 7);
   assert.equal(now - bj(2026, 11, 10, 0, 0), 1);
+});
+
+test('parseSessionMeta reads cwd from the session header only', () => {
+  const text = [
+    '{"type":"session","version":4,"id":"s1","cwd":"/Users/me/projects/alpha"}',
+    '{"type":"assistant/message","time":1}',
+  ].join('\n');
+  assert.deepEqual(parseSessionMeta(text), { cwd: '/Users/me/projects/alpha' });
+  assert.deepEqual(parseSessionMeta('{"type":"assistant/message"}'), { cwd: null });
+  assert.deepEqual(parseSessionMeta('not json'), { cwd: null });
+});
+
+test('projectInfo prefers cwd and decodes the workspace slug fallback', () => {
+  assert.deepEqual(projectInfo('/Users/me/projects/alpha/', '--Users-me-projects-alpha--'), {
+    key: '/Users/me/projects/alpha',
+    name: 'alpha',
+    path: '/Users/me/projects/alpha',
+  });
+
+  const fallback = projectInfo(null, '--Users-me-~5FAE~~8F6F~soft-alpha--');
+  assert.equal(fallback.key, 'slug:--Users-me-~5FAE~~8F6F~soft-alpha--');
+  assert.equal(fallback.name, 'Users/me/微软soft/alpha');
+  assert.equal(fallback.path, '/Users/me/微软soft/alpha');
+});
+
+test('parseSessionTurns attaches the project when one is supplied', () => {
+  const line =
+    '{"type":"assistant/message","time":200,"data":{"usage":{"inputTokens":10,"cacheReadTokens":20,"outputTokens":30},"message":{"source":{"model":"deepseek-flash"}}}}';
+  const project = { key: '/alpha', name: 'alpha', path: '/alpha' };
+  assert.deepEqual(parseSessionTurns(line, project), [
+    {
+      t: 200,
+      model: 'deepseek-flash',
+      input: 10,
+      cache: 20,
+      output: 30,
+      project,
+    },
+  ]);
+});
+
+test('aggregateTurns groups window spend by project, sorted by cost', () => {
+  const now = bj(2026, 11, 10, 12, 0);
+  const alpha = { key: '/alpha', name: 'alpha', path: '/alpha' };
+  const beta = { key: '/beta', name: 'beta', path: '/beta' };
+  const turns = [
+    // Peak Monday: 1M miss at peak price = 2.
+    { t: bj(2026, 11, 9, 10, 0), model: 'deepseek-flash', input: 1e6, cache: 0, output: 0, project: alpha },
+    // Valley Tuesday: 3M miss at valley price = 3.
+    { t: bj(2026, 11, 10, 8, 0), model: 'deepseek-flash', input: 3e6, cache: 0, output: 0, project: beta },
+    // Outside the 7-day window: must not be grouped.
+    { t: bj(2026, 10, 1, 8, 0), model: 'deepseek-flash', input: 9e6, cache: 0, output: 0, project: alpha },
+    // Legacy turn without a project: counted in totals, not in project shares.
+    { t: bj(2026, 11, 10, 9, 0), model: 'deepseek-flash', input: 1e6, cache: 0, output: 0 },
+  ];
+
+  const agg = aggregateTurns(turns, { now, days: 7 });
+  assert.deepEqual(
+    agg.projects.map((project) => [project.name, project.path, project.calls, project.tokens, project.cost]),
+    [
+      ['beta', '/beta', 1, 3_000_000, 3],
+      ['alpha', '/alpha', 1, 1_000_000, 2],
+    ],
+  );
+  assert.ok(Math.abs(agg.projects[0].share - 0.6) < 1e-12);
+  assert.ok(Math.abs(agg.projects[1].share - 0.4) < 1e-12);
+});
+
+test('walletSummary levels follow the 7-day and 3-day runways', () => {
+  assert.equal(walletSummary(70, 10).level, 'ok');
+  assert.equal(walletSummary(69, 10).level, 'warn');
+  assert.equal(walletSummary(30, 10).level, 'warn');
+  assert.equal(walletSummary(29, 10).level, 'low');
+  assert.deepEqual(walletSummary(29, 10), { balance: 29, avgPerDay: 10, runwayDays: 2.9, level: 'low' });
+  assert.deepEqual(walletSummary(null, 10), { balance: null, avgPerDay: 10, runwayDays: null, level: 'unknown' });
+  assert.deepEqual(walletSummary(10, 0), { balance: 10, avgPerDay: 0, runwayDays: null, level: 'unknown' });
+  assert.equal(walletSummary(-5, 10).runwayDays, 0);
+});
+
+test('buildCsv escapes cells and guards spreadsheet formulas', () => {
+  assert.equal(csvEscape('a,b'), '"a,b"');
+  assert.equal(csvEscape('say "hi"'), '"say ""hi"""');
+  assert.equal(csvEscape('=SUM(A1)'), "'=SUM(A1)");
+  assert.equal(csvEscape(3), '3');
+  assert.equal(csvEscape(null), '');
+
+  const payload = {
+    days: [
+      {
+        day: '2026-11-10',
+        calls: 2,
+        tokens: 10,
+        cost: 0.5,
+        costCache: 0.1,
+        costMiss: 0.2,
+        costOut: 0.2,
+        peakCost: 0.3,
+        valleyCost: 0.2,
+        savingIfValley: 0.15,
+        peakShare: 0.6,
+        hitRate: 0.5,
+        holiday: '国庆节',
+      },
+    ],
+    projects: [{ name: 'a,b', path: '/x', calls: 1, tokens: 2, cost: 0.1, peakCost: 0.1, share: 1 }],
+  };
+
+  const daily = buildCsv(payload, 'days');
+  assert.match(daily, /^day,calls,tokens,cost,cost_cache/);
+  assert.match(daily, /2026-11-10,2,10,0.5,0.1,0.2,0.2,0.3,0.2,0.15,0.6,0.5,国庆节\n$/);
+
+  const projects = buildCsv(payload, 'projects');
+  assert.match(projects, /^project,path,calls,tokens,cost,peak_cost,share\n/);
+  assert.match(projects, /"a,b",\/x,1,2,0.1,0.1,1\n$/);
+  assert.equal(buildCsv({ days: [] }, 'bogus'), 'day,calls,tokens,cost,cost_cache,cost_miss,cost_out,peak_cost,valley_cost,saving_if_valley,peak_share,hit_rate,holiday\n');
 });

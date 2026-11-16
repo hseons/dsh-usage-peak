@@ -5,10 +5,11 @@
  * valley tariff all day, while a makeup workday ("调休上班", including a
  * weekend) follows the normal weekday peak windows.
  *
- * Source: State Council notice
- * https://www.gov.cn/zhengce/zhengceku/202511/content_7047091.htm
- * Cross-checked against NateScarlet/holiday-cn (2026.json), which cites the
- * same notice.
+ * Source: State Council notices
+ * 2026 — https://www.gov.cn/zhengce/zhengceku/202511/content_7047091.htm
+ * 2027 — https://www.gov.cn/zhengce/zhengceku/202611/content_7085102.htm
+ * Cross-checked against NateScarlet/holiday-cn (2026.json, 2027.json), which
+ * cite the same notices.
  *
  * To support a new year, append its dates here and add the year to
  * CALENDAR_YEARS. Years without data fall back to the weekday rule and raise a
@@ -16,7 +17,7 @@
  */
 
 /** Years covered by the data below. */
-export const CALENDAR_YEARS = [2026];
+export const CALENDAR_YEARS = [2026, 2027];
 
 /** Public holidays: date -> name. Billed at the valley tariff all day. */
 export const OFF_DAYS = new Map([
@@ -53,6 +54,35 @@ export const OFF_DAYS = new Map([
   ['2026-10-05', '国庆节'],
   ['2026-10-06', '国庆节'],
   ['2026-10-07', '国庆节'],
+  ['2027-01-01', '元旦'],
+  ['2027-01-02', '元旦'],
+  ['2027-01-03', '元旦'],
+  ['2027-02-05', '春节'],
+  ['2027-02-06', '春节'],
+  ['2027-02-07', '春节'],
+  ['2027-02-08', '春节'],
+  ['2027-02-09', '春节'],
+  ['2027-02-10', '春节'],
+  ['2027-02-11', '春节'],
+  ['2027-02-12', '春节'],
+  ['2027-02-13', '春节'],
+  ['2027-04-03', '清明节'],
+  ['2027-04-04', '清明节'],
+  ['2027-04-05', '清明节'],
+  ['2027-05-01', '劳动节'],
+  ['2027-05-02', '劳动节'],
+  ['2027-05-03', '劳动节'],
+  ['2027-05-04', '劳动节'],
+  ['2027-05-05', '劳动节'],
+  ['2027-06-09', '端午节'],
+  ['2027-09-15', '中秋节'],
+  ['2027-10-01', '国庆节'],
+  ['2027-10-02', '国庆节'],
+  ['2027-10-03', '国庆节'],
+  ['2027-10-04', '国庆节'],
+  ['2027-10-05', '国庆节'],
+  ['2027-10-06', '国庆节'],
+  ['2027-10-07', '国庆节'],
 ]);
 
 /** Makeup workdays: date -> the holiday they belong to. */
@@ -63,6 +93,11 @@ export const WORKDAYS = new Map([
   ['2026-05-09', '劳动节'],
   ['2026-09-20', '国庆节'],
   ['2026-10-10', '国庆节'],
+  ['2027-01-31', '春节'],
+  ['2027-02-14', '春节'],
+  ['2027-05-08', '劳动节'],
+  ['2027-09-26', '国庆节'],
+  ['2027-10-09', '国庆节'],
 ]);
 
 /** Calendar year of a `YYYY-MM-DD` day key, as a number. */
