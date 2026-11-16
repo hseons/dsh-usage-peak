@@ -12,13 +12,15 @@
 
 ## 功能
 
-- **侧栏常驻胶囊**：`● 峰  ¥14.70 · 12.8M tok · 2:43 后转谷`，点一下打开完整面板。侧栏折叠时收成一个小圆点。可撑天数不足 7 天时胶囊转琥珀色，不足 3 天转红色。
+- **侧栏常驻胶囊**：`● 峰  ¥14.70 · 12.8M tok · 2:43 后转谷`，点一下打开完整面板。侧栏折叠时收成一个小圆点。默认可撑天数不足 7 天时胶囊转琥珀色，不足 3 天转红色；可在面板调整阈值。
 - **峰谷状态**：当前时段、距离下次切换的倒计时、当前时段单价（缓存命中 / 全价输入 / 输出）。
 - **今日概况**：花费、请求数、tokens、缓存命中率、峰时花费占比、**谷时更省**（把这些峰时用量挪到谷时能省下的钱）、余额、**余额可撑天数**（余额 ÷ 近 7 天日均花费）。
 - **今日 24 小时分布**：每小时花费柱状，峰时与谷时用不同颜色，当前小时高亮。
 - **花费构成**：缓存命中 / 全价输入 / 输出 三段占比，直接看出钱花在哪。
 - **近 7 / 14 / 30 天趋势**：右上角切换窗口，按天堆叠柱状，缺数据的日期补零，列数恒定；可对照峰时占比判断"贵在哪天"。
-- **按项目**：按会话头里的工作目录（`cwd`）聚合，倒序列出每个项目的请求数、tokens、花费与占比，直接回答「哪个项目最烧钱」。
+- **按项目与下钻**：按会话头里的工作目录（`cwd`）聚合，倒序列出每个项目的请求数、tokens、花费与占比条。点击项目可只看该项目的概况、24 小时、趋势和模型明细，通过顶部「全部项目」恢复。
+- **可配置预警**：在面板中设置余额预警天数（默认 7）、紧张天数（默认 3）和可选每日预算。每日花费超过预算时预警，达到预算 120% 时紧张；多个告警取最高级别。配置保存在当前浏览器，侧栏与面板同步。
+- **全局钱包口径**：余额、余额可撑天数和每日预算始终按所有项目计算，不会因为筛选一个低花费项目而误判余额充足。
 - **按模型**：Flash / Pro 各自的请求数、tokens、花费。
 - **导出 CSV**：每日数据与项目数据都能导出（UTF-8 BOM，Excel 直接打开不乱码；单元格做了公式注入防护）。
 - **价目表**：当前时段那一行高亮，方便解释账单。
@@ -47,8 +49,9 @@
 
 日志是**多帧 zstd**，Node 自带的 `zlib.zstdDecompressSync` 只解第一帧，所以插件内部按 zstd magic 切帧、逐帧解压再拼接（不需要 `zstd` 命令行）。
 
-- 数据接口支持 `?days=7|14|30` 选择统计窗口（默认 14，白名单之外的取值回落到 14）；快照按窗口分别缓存 15 秒，面板上的「刷新」按钮会带 `?fresh=1` 强制重算。
-- 导出接口为 `/plugin/dsh-usage-peak/export.csv?days=7|14|30&scope=days|projects`，带 `Content-Disposition: attachment` 与 UTF-8 BOM。
+- 数据接口支持 `?days=7|14|30` 选择统计窗口（默认 14，白名单之外的取值回落到 14）；快照按窗口与项目分别缓存 15 秒，面板上的「刷新」按钮会带 `?fresh=1` 强制重算。
+- `/data` 和 `/export.csv` 均接受可选 `project` 参数（项目的精确 key，真实会话通常是绝对 `cwd`；必须 URL 编码）。不传或空字符串表示全部项目，未知 key 返回空项目数据而不是退回全量。项目列表来自全局窗口，方便切换。
+- 导出接口为 `/plugin/dsh-usage-peak/export.csv?days=7|14|30&scope=days|projects&project=...`，带 `Content-Disposition: attachment` 与 UTF-8 BOM。页面的每日和项目 CSV 都跟随当前筛选。
 
 峰时单价恰为谷时 2 倍，所以「谷时更省」= 峰时花费 ÷ 2：它衡量的是这些峰时用量如果改在谷时发生能省多少，而不是已经省下的钱。
 
@@ -74,6 +77,7 @@ dsh plugin add dsh-usage-peak
 ## 已知限制
 
 - 依赖 DSH 会话日志的**内部格式**（`session.v4.jsonl.zstd` 与 `assistant/message.data.usage`）。DSH 改格式时需要跟进；读不到数据时面板会显示为空态而不是报错。
+- 每日预算基于本机会话日志估算的北京时间「今日」总花费，不代表平台实时账单；预警配置只存当前浏览器，不跨设备同步。宿主功能升级后需重启 DSH，客户端重新加载后使用新界面。
 - 只统计本机会话日志覆盖到的历史，鲸鱼记账本从 2026-11-02 才开始记账。
 - 项目归属依赖会话头中的 `cwd`；极少数没有会话头的旧日志会回落到 workspace slug，slug 会转义部分字节，显示名可能不如真实路径精确。
 
@@ -93,6 +97,9 @@ A usage and cost dashboard for DeepSeek Harness. It reads the local session logs
 - China public holidays and makeup workdays: holidays are valley all day, makeup weekend workdays follow the weekday windows (2026–2027 calendars shipped; missing years fall back to Mon-Fri with a visible warning);
 - a footer with the GitHub repository link, the running version and the covered calendar years;
 - a details page (Settings → Usage dashboard) with KPIs (including balance runway), an hourly breakdown, cost composition, a 7/14/30-day trend switch, spend by project, a per-model table, CSV export and the price list;
+- project drilldown: select a project to filter KPIs, hourly/daily charts, models and both CSV exports; clear the filter to return to all projects;
+- configurable browser-local runway thresholds (warning 7 days / critical 3 days by default) and an optional daily budget (warning above 100%, critical at 120%); settings sync between the sidebar and dashboard;
+- balance runway and daily-budget alerts always use global spend, even while a project is selected;
 - a "valley saving" KPI: since peak costs exactly 2x valley, moving the same peak usage to valley time would have saved half of the peak spend.
 
 Pricing (`[valley, peak]`, CNY per million tokens): Flash cache-hit 0.02/0.04, miss 1/2, output 4/8; Pro cache-hit 0.15/0.30, miss 4.5/9, output 13.5/27. Peak hours are 09:00–12:00 and 14:00–18:00 Beijing time on weekdays; everything else is valley (half price).

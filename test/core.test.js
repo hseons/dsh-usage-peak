@@ -7,6 +7,8 @@ import zlib from 'node:zlib';
 
 import {
   aggregateTurns,
+  apply,
+  buildSnapshot,
   buildCsv,
   csvEscape,
   decodeSessionFile,
@@ -358,4 +360,175 @@ test('buildCsv escapes cells and guards spreadsheet formulas', () => {
   assert.match(projects, /^project,path,calls,tokens,cost,peak_cost,share\n/);
   assert.match(projects, /"a,b",\/x,1,2,0.1,0.1,1\n$/);
   assert.equal(buildCsv({ days: [] }, 'bogus'), 'day,calls,tokens,cost,cost_cache,cost_miss,cost_out,peak_cost,valley_cost,saving_if_valley,peak_share,hit_rate,holiday\n');
+});
+
+
+const filterAlpha = { key: '/项目/alpha + 100% & #', name: 'alpha + 100% & #', path: '/项目/alpha + 100% & #' };
+const filterBeta = { key: '/项目/alpha + 100% & #-child', name: 'beta', path: '/项目/beta' };
+function filterTurns(now) {
+  return [
+    { t: now, model: 'deepseek-flash', input: 1e6, cache: 0, output: 0, project: filterAlpha },
+    { t: now, model: 'deepseek-pro', input: 2e6, cache: 0, output: 0, project: filterBeta },
+    { t: now, model: 'mystery', input: 1e6, cache: 0, output: 0 },
+  ];
+}
+
+test('project drilldown uses exact opaque keys and preserves the full project directory', () => {
+  const now = bj(2026, 11, 10, 10);
+  const turns = filterTurns(now);
+  const global = aggregateTurns(turns, { now, days: 7 });
+  const alpha = aggregateTurns(turns, { now, days: 7, project: filterAlpha.key });
+  assert.deepEqual(alpha.selectedProject, filterAlpha);
+  assert.deepEqual(alpha.projectOptions, global.projects);
+  assert.equal(alpha.today.calls, 1);
+  assert.equal(alpha.today.cost, 2);
+  assert.equal(alpha.week.cost, 2);
+  assert.equal(alpha.hours[10].calls, 1);
+  assert.deepEqual(alpha.models.map((m) => m.calls), [1, 0]);
+  assert.deepEqual(alpha.warnings, []);
+  assert.equal(alpha.projects.length, 1);
+  assert.equal(alpha.projects[0].share, 1);
+  assert.equal(global.selectedProject, null);
+  assert.deepEqual(aggregateTurns(turns, { now, project: '' }).selectedProject, null);
+  const unknown = aggregateTurns(turns, { now, days: 7, project: '/missing' });
+  assert.deepEqual(unknown.selectedProject, { key: '/missing', name: 'missing', path: '/missing' });
+  assert.equal(unknown.today.calls, 0);
+  assert.equal(unknown.window.length, 7);
+  assert.deepEqual(unknown.projects, []);
+  assert.deepEqual(unknown.projectOptions, global.projects);
+});
+
+function snapshotFixture(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'usage-filter-'));
+  const now = bj(2036, 11, 10, 10);
+  const turns = filterTurns(now);
+  for (const [i, turn] of turns.entries()) {
+    const session = path.join(dir, '.dsh/sessions', `workspace-${i}`, 'session');
+    fs.mkdirSync(session, { recursive: true });
+    const text = [
+      JSON.stringify({ type: 'session', cwd: turn.project?.key || '/legacy' }),
+      JSON.stringify({
+        type: 'assistant/message',
+        time: turn.t,
+        data: { usage: { inputTokens: turn.input }, message: { source: { model: turn.model } } },
+      }),
+    ].join('\n');
+    fs.writeFileSync(path.join(session, 'session.v4.jsonl.zstd'), zlib.zstdCompressSync(Buffer.from(text)));
+  }
+  fs.writeFileSync(
+    path.join(dir, '.dsh/.dshw-usage.json'),
+    JSON.stringify({ lastBalance: 70, history: { '2036-11-10': 99 } }),
+  );
+  t.mock.method(os, 'homedir', () => dir);
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  return { now };
+}
+
+test('snapshot caches isolate project and window while wallet and global spend stay global', (t) => {
+  const { now } = snapshotFixture(t);
+  const global = buildSnapshot({ now, days: 7, fresh: true });
+  const alpha = buildSnapshot({ now, days: 7, project: filterAlpha.key, fresh: true });
+  const beta = buildSnapshot({ now, days: 7, project: filterBeta.key, fresh: true });
+  assert.equal(alpha.today.calls, 1);
+  assert.equal(beta.today.calls, 1);
+  assert.notEqual(alpha.today.cost, beta.today.cost);
+  assert.deepEqual(alpha.wallet, global.wallet);
+  assert.deepEqual(beta.wallet, global.wallet);
+  assert.equal(alpha.globalTodayCost, global.today.cost);
+  assert.equal(global.today.ledger, 99);
+  assert.equal(alpha.today.ledger, undefined);
+  assert.deepEqual(alpha.projectOptions, global.projects);
+  assert.strictEqual(buildSnapshot({ now: now + 1, days: 7, project: filterAlpha.key }), alpha);
+  assert.strictEqual(buildSnapshot({ now: now + 1, days: 7, project: filterBeta.key }), beta);
+  assert.strictEqual(buildSnapshot({ now: now + 1, days: 7 }), global);
+  assert.equal(buildSnapshot({ now, days: 14, project: filterAlpha.key, fresh: true }).days.length, 14);
+  const unknown = buildSnapshot({ now, days: 7, project: '/missing', fresh: true });
+  assert.equal(unknown.today.cost, 0);
+  assert.deepEqual(unknown.wallet, global.wallet);
+  assert.equal(unknown.globalTodayCost, global.today.cost);
+});
+
+function routeHarness(rejection) {
+  const routes = new Map();
+  const disposed = [];
+  let cleanup;
+  apply({
+    webServer: {
+      register(route) {
+        routes.set(route.path, route);
+        return () => disposed.push(route.path);
+      },
+    },
+    connection: { requestRejection() { return rejection; } },
+    effect(factory) { cleanup = factory(); },
+  });
+  return {
+    disposed,
+    cleanup: () => cleanup(),
+    async request(route, url, method = 'GET') {
+      const res = {
+        statusCode: 200,
+        headers: {},
+        body: Buffer.alloc(0),
+        writeHead(status, headers) {
+          this.statusCode = status;
+          this.headers = headers;
+        },
+        end(body) { this.body = Buffer.from(body || ''); },
+      };
+      await routes.get(`/plugin/dsh-usage-peak/${route}`).handler({ url, method }, res);
+      return res;
+    },
+  };
+}
+
+test('HTTP data and CSV routes decode project once, filter exports, and preserve BOM', async (t) => {
+  const { now } = snapshotFixture(t);
+  t.mock.method(Date, 'now', () => now);
+  const app = routeHarness();
+  const project = encodeURIComponent(filterAlpha.key);
+  const res = await app.request('data', `/plugin/dsh-usage-peak/data?days=7&fresh=1&project=${project}`);
+  assert.equal(res.statusCode, 200);
+  const payload = JSON.parse(res.body);
+  assert.deepEqual(payload.selectedProject, filterAlpha);
+  assert.equal(payload.today.calls, 1);
+  assert.equal(payload.projectOptions.length, 3);
+  const csv = await app.request('export.csv', `/plugin/dsh-usage-peak/export.csv?days=7&scope=projects&project=${project}`);
+  assert.equal(csv.statusCode, 200);
+  assert.deepEqual([...csv.body.subarray(0, 3)], [0xef, 0xbb, 0xbf]);
+  assert.match(csv.headers['Content-Type'], /^text\/csv/);
+  assert.match(csv.headers['Content-Disposition'], /^attachment;/);
+  assert.equal(Number(csv.headers['Content-Length']), csv.body.length);
+  assert.equal(csv.headers['Cache-Control'], 'no-store');
+  const text = csv.body.toString('utf8');
+  assert.ok(text.includes(filterAlpha.key));
+  assert.ok(!text.includes(filterBeta.key));
+  assert.equal(text.trim().split('\n').length, 2);
+  const daily = await app.request('export.csv', `/?days=7&project=${project}`);
+  assert.ok(daily.body.toString('utf8').includes(buildCsv(payload, 'days')));
+  const unknown = await app.request('data', '/?project=%2Fmissing&fresh=1');
+  assert.equal(JSON.parse(unknown.body).today.calls, 0);
+  for (const route of ['data', 'export.csv']) {
+    assert.equal((await app.request(route, '/', 'POST')).statusCode, 405);
+    const rejected = routeHarness(401);
+    const denied = await rejected.request(route, '/');
+    assert.equal(denied.statusCode, 401);
+    assert.equal(denied.body.length, 0);
+    assert.equal((await routeHarness(true).request(route, '/')).statusCode, 403);
+  }
+  app.cleanup();
+  assert.deepEqual(app.disposed, ['/plugin/dsh-usage-peak/data', '/plugin/dsh-usage-peak/export.csv']);
+});
+
+test('snapshot cache bounds arbitrary keys and evicts expired entries', (t) => {
+  const { now } = snapshotFixture(t);
+  const oldest = buildSnapshot({ now, days: 7, project: '/cache-0', fresh: true });
+  for (let index = 1; index <= 64; index += 1) {
+    buildSnapshot({ now, days: 7, project: `/cache-${index}`, fresh: true });
+  }
+  assert.notStrictEqual(buildSnapshot({ now, days: 7, project: '/cache-0' }), oldest);
+  const current = buildSnapshot({ now, days: 7, project: '/cache-64' });
+  assert.strictEqual(buildSnapshot({ now: now + 1, days: 7, project: '/cache-64' }), current);
+  buildSnapshot({ now: now + 15000, days: 7, project: '/new-after-expiry' });
+  assert.notStrictEqual(buildSnapshot({ now: now + 15000, days: 7, project: '/cache-64' }), current);
 });

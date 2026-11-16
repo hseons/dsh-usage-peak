@@ -21,6 +21,7 @@ const REPO_URL = 'https://github.com/hhse/dsh-usage-peak';
 const VERSION = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version;
 const ROUTE_BASE = '/plugin/dsh-usage-peak';
 const SNAPSHOT_TTL_MS = 15_000;
+const MAX_SNAPSHOTS = 64;
 const BJ_OFFSET = 8 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_DAYS = 14;
@@ -202,7 +203,7 @@ export function parseSessionTurns(text, project) {
 /* ------------------------------------------------------------------ */
 
 const fileCache = new Map(); // file -> { mtimeMs, size, turns }
-const snapshotCache = new Map(); // window days -> { builtAt, payload }
+const snapshotCache = new Map(); // [window days, exact project key] -> { builtAt, payload }
 
 export function normalizeDays(value) {
   const days = Number(value);
@@ -412,6 +413,18 @@ export function walletSummary(balance, avgPerDay) {
 export function aggregateTurns(turns, options = {}) {
   const now = Number.isFinite(options.now) ? options.now : Date.now();
   const days = normalizeDays(options.days);
+  // Keys are opaque identities: do not trim, prefix-match, or URL-decode here.
+  // URLSearchParams already performs the single required HTTP decoding pass.
+  const projectKey = typeof options.project === 'string' && options.project !== '' ? options.project : null;
+  if (projectKey !== null) {
+    const global = aggregateTurns(turns, { now, days });
+    const filtered = aggregateTurns((turns || []).filter((turn) => turn?.project?.key === projectKey), { now, days });
+    const known = global.projects.find((project) => project.key === projectKey);
+    const selectedProject = known
+      ? { key: known.key, name: known.name, path: known.path }
+      : { key: projectKey, name: path.basename(projectKey) || projectKey, path: projectKey };
+    return { ...filtered, selectedProject, projectOptions: global.projects };
+  }
   const byDay = new Map();
   const byProject = new Map();
   const unknownModels = new Set();
@@ -506,6 +519,8 @@ export function aggregateTurns(turns, options = {}) {
     hours: today ? today.hours : [],
     window,
     projects,
+    selectedProject: null,
+    projectOptions: projects,
     week: {
       cost: round(week.cost),
       calls: week.calls,
@@ -530,12 +545,22 @@ export function aggregateTurns(turns, options = {}) {
 export function buildSnapshot(options = {}) {
   const now = Number.isFinite(options.now) ? options.now : Date.now();
   const days = normalizeDays(options.days);
-  const cached = snapshotCache.get(days);
-  if (cached && !options.fresh && now - cached.builtAt < SNAPSHOT_TTL_MS) return cached.payload;
+  const project = typeof options.project === 'string' && options.project !== '' ? options.project : null;
+  const cacheKey = JSON.stringify([days, project]);
+  const cached = snapshotCache.get(cacheKey);
+  if (cached && !options.fresh && now >= cached.builtAt && now - cached.builtAt < SNAPSHOT_TTL_MS) return cached.payload;
 
-  const agg = aggregateTurns(collectTurns(), { now, days });
+  const turns = collectTurns();
+  const global = aggregateTurns(turns, { now, days });
+  // Reuse the already-built directory rather than aggregating all projects twice.
+  const selected = project === null ? null : global.projects.find((entry) => entry.key === project);
+  const selectedProject = project === null ? null : selected
+    ? { key: selected.key, name: selected.name, path: selected.path }
+    : { key: project, name: path.basename(project) || project, path: project };
+  const agg = project === null ? global : aggregateTurns(turns.filter((turn) => turn.project?.key === project), { now, days });
   const ledger = readLedger();
-  if (ledger.ok) {
+  // Ledger values are account-level, not attributable to an individual project.
+  if (ledger.ok && project === null) {
     for (const entry of agg.window) {
       const booked = ledger.history && ledger.history[entry.day];
       entry.ledger = typeof booked === 'number' ? round(booked) : null;
@@ -572,8 +597,11 @@ export function buildSnapshot(options = {}) {
     hours: agg.hours,
     days: agg.window,
     projects: agg.projects,
+    selectedProject,
+    projectOptions: global.projects,
+    globalTodayCost: global.today.cost,
     week: agg.week,
-    wallet: walletSummary(ledger.ok ? ledger.balance : null, agg.week.avgPerDay),
+    wallet: walletSummary(ledger.ok ? ledger.balance : null, global.week.avgPerDay),
     models: agg.models,
     pricing: PRICING.map((price) => ({
       id: price.id,
@@ -586,7 +614,14 @@ export function buildSnapshot(options = {}) {
     warnings: agg.warnings,
   };
 
-  snapshotCache.set(days, { builtAt: now, payload });
+  // Project is user-controlled, so avoid retaining one snapshot for every
+  // arbitrary key forever. Drop expired entries and bound live snapshots FIFO.
+  for (const [key, entry] of snapshotCache) {
+    if (now < entry.builtAt || now - entry.builtAt >= SNAPSHOT_TTL_MS) snapshotCache.delete(key);
+  }
+  snapshotCache.delete(cacheKey);
+  while (snapshotCache.size >= MAX_SNAPSHOTS) snapshotCache.delete(snapshotCache.keys().next().value);
+  snapshotCache.set(cacheKey, { builtAt: now, payload });
   return payload;
 }
 
@@ -721,8 +756,9 @@ export function apply(ctx) {
       const url = new URL(req.url || '/', 'http://127.0.0.1');
       const fresh = url.searchParams.get('fresh') === '1' || url.searchParams.get('fresh') === 'true';
       const days = normalizeDays(url.searchParams.get('days'));
+      const project = url.searchParams.get('project');
       try {
-        sendJson(res, 200, buildSnapshot({ days, fresh }));
+        sendJson(res, 200, buildSnapshot({ days, fresh, project }));
       } catch (error) {
         sendJson(res, 500, { ok: false, error: String((error && error.stack) || error) });
       }
@@ -741,8 +777,9 @@ export function apply(ctx) {
       const url = new URL(req.url || '/', 'http://127.0.0.1');
       const days = normalizeDays(url.searchParams.get('days'));
       const scope = url.searchParams.get('scope') === 'projects' ? 'projects' : 'days';
+      const project = url.searchParams.get('project');
       try {
-        const snapshot = buildSnapshot({ days, fresh: true });
+        const snapshot = buildSnapshot({ days, fresh: true, project });
         const body = Buffer.from(`\uFEFF${buildCsv(snapshot, scope)}`, 'utf8');
         res.writeHead(200, {
           'Content-Type': 'text/csv; charset=utf-8',

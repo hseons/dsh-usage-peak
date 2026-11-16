@@ -13,7 +13,7 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react');
     const h = React.createElement;
-    const { useState, useEffect, useCallback } = React;
+    const { useState, useEffect, useCallback, useRef } = React;
 
     const NS = 'dsh-usage-peak';
     const DATA_URL = '/plugin/dsh-usage-peak/data';
@@ -85,6 +85,20 @@ window.__ModuleLoader__.load({
         'wallet.warn': '余额偏低',
         'wallet.low': '余额紧张',
 
+        'projects.all': '全部项目',
+        'projects.clear': '清除项目筛选',
+        'projects.select': '筛选项目',
+        'alerts.title': '全局预算与余额预警',
+        'alerts.warn': '预警天数',
+        'alerts.low': '紧张天数',
+        'alerts.budget': '每日预算（元，可选）',
+        'alerts.save': '保存阈值',
+        'alerts.invalid': '请输入有限正数，且紧张天数必须小于预警天数。',
+        'alerts.savedMemory': '存储不可用；仅本页生效，关闭页面后会丢失。',
+        'alerts.saved': '已保存；当前页面所有面板同步生效。',
+        'alerts.rules': '全局账户：余额可撑 <{warn} 天为琥珀、<{low} 天为红；每日花费 >预算为琥珀、≥120%预算为红。仅提示，不自动限流。',
+        'alerts.exceeded': '全局每日预算已超出',
+        'alerts.global': '全局今日',
         'projects.title': '按项目',
         'projects.hint': '按花费排序',
         'projects.name': '项目',
@@ -183,6 +197,20 @@ window.__ModuleLoader__.load({
         'wallet.warn': 'Low balance',
         'wallet.low': 'Balance critical',
 
+        'projects.all': 'All projects',
+        'projects.clear': 'Clear project filter',
+        'projects.select': 'Filter project',
+        'alerts.title': 'Global budget and balance alerts',
+        'alerts.warn': 'Warning days',
+        'alerts.low': 'Critical days',
+        'alerts.budget': 'Daily budget (CNY, optional)',
+        'alerts.save': 'Save thresholds',
+        'alerts.invalid': 'Use finite positive numbers; critical days must be less than warning days.',
+        'alerts.savedMemory': 'Storage unavailable; applies only to this page until it closes.',
+        'alerts.saved': 'Saved; all panels on this page are synchronized.',
+        'alerts.rules': 'Global account: runway <{warn} days is amber, <{low} is red; daily spend >budget is amber, ≥120% is red. Alerts only, no rate limiting.',
+        'alerts.exceeded': 'Global daily budget exceeded',
+        'alerts.global': 'Global today',
         'projects.title': 'By project',
         'projects.hint': 'sorted by spend',
         'projects.name': 'Project',
@@ -294,48 +322,119 @@ window.__ModuleLoader__.load({
 
     /* --------------------------------- data --------------------------------- */
 
-    function useFeed(days) {
-      const windowDays = days || 14;
-      const [state, setState] = useState({ loading: true, error: null, data: null });
-      const [tick, setTick] = useState(0);
+    const PREFS_KEY = 'dsh-usage-peak:alerts:v1';
+    const PREFS_EVENT = 'dsh-usage-peak:alerts-change';
+    const DEFAULT_PREFS = { warnDays: 7, lowDays: 3, dailyBudget: null };
+    const tint = (color, amount = 10) => `color-mix(in srgb, ${color} ${amount}%, transparent)`;
 
+    function validatePrefs(value) {
+      if (!value || typeof value !== 'object') return null;
+      const positive = (v) => (typeof v === 'number' || typeof v === 'string') && String(v).trim() !== '' && Number.isFinite(Number(v)) && Number(v) > 0;
+      if (!positive(value.warnDays) || !positive(value.lowDays) || Number(value.lowDays) >= Number(value.warnDays)) return null;
+      const empty = value.dailyBudget === null || value.dailyBudget === undefined || value.dailyBudget === '';
+      if (!empty && !positive(value.dailyBudget)) return null;
+      return { warnDays: Number(value.warnDays), lowDays: Number(value.lowDays), dailyBudget: empty ? null : Number(value.dailyBudget) };
+    }
+
+    let memoryPrefs = { ...DEFAULT_PREFS };
+    let storageFailed = false;
+    function readPrefs() {
+      if (storageFailed) return { ...memoryPrefs };
+      try {
+        const raw = window.localStorage.getItem(PREFS_KEY);
+        if (raw !== null) memoryPrefs = validatePrefs(JSON.parse(raw)) || { ...DEFAULT_PREFS };
+      } catch { /* Disabled storage: retain this page's last valid values. */ }
+      return { ...memoryPrefs };
+    }
+    function savePrefs(value) {
+      const next = validatePrefs(value);
+      if (!next) return false;
+      memoryPrefs = next;
+      try { window.localStorage.setItem(PREFS_KEY, JSON.stringify(next)); storageFailed = false; } catch { storageFailed = true; /* In-memory fallback even if reads still succeed. */ }
+      window.dispatchEvent(new CustomEvent(PREFS_EVENT, { detail: next }));
+      return true;
+    }
+    function usePreferences() {
+      const [prefs, setPrefs] = useState(readPrefs);
+      useEffect(() => {
+        const sync = (event) => {
+          if (event.type === 'storage' && event.key !== PREFS_KEY && event.key !== null) return;
+          if (event.type === 'storage') storageFailed = false;
+          if (event.type === 'storage' && (event.key === PREFS_KEY || event.key === null) && event.newValue === null) memoryPrefs = { ...DEFAULT_PREFS };
+          setPrefs(event.type === PREFS_EVENT ? { ...memoryPrefs } : readPrefs());
+        };
+        window.addEventListener(PREFS_EVENT, sync);
+        window.addEventListener('storage', sync);
+        return () => { window.removeEventListener(PREFS_EVENT, sync); window.removeEventListener('storage', sync); };
+      }, []);
+      return prefs;
+    }
+
+    // Account-level signals only. Never substitute the selected project's cost.
+    function alertState(data, prefs) {
+      const rules = validatePrefs(prefs) || DEFAULT_PREFS;
+      const days = data && data.wallet && data.wallet.runwayDays;
+      const walletLevel = Number.isFinite(days) ? days < rules.lowDays ? 'low' : days < rules.warnDays ? 'warn' : 'ok' : 'unknown';
+      const cost = data && data.globalTodayCost;
+      const budgetLevel = rules.dailyBudget && Number.isFinite(cost)
+        ? cost >= rules.dailyBudget * 1.2 ? 'low' : cost > rules.dailyBudget ? 'warn' : 'ok' : 'unknown';
+      const rank = { unknown: 0, ok: 0, warn: 1, low: 2 };
+      const level = rank[budgetLevel] > rank[walletLevel] ? budgetLevel : walletLevel;
+      return { level, walletLevel, budgetLevel, budgetExceeded: rank[budgetLevel] > 0,
+        active: rank[level] > 0, tone: level === 'low' ? C.error : level === 'warn' ? C.peak : C.text3 };
+    }
+
+    function feedUrl(base, days, project, fresh = false) {
+      return `${base}?days=${days || DEFAULT_DAYS}${project ? `&project=${encodeURIComponent(project)}` : ''}${fresh ? '&fresh=1' : ''}`;
+    }
+
+    // Generation guard rejects old filter responses and older same-filter reloads.
+    function requestGate() {
+      let key = null;
+      let serial = 0;
+      return {
+        select(next) { if (key !== next) { key = next; serial += 1; } },
+        begin(next) { key = next; serial += 1; return { key, serial }; },
+        current(ticket) { return ticket.key === key && ticket.serial === serial; },
+        invalidate() { serial += 1; },
+      };
+    }
+    function useFeed(days, project = '') {
+      const windowDays = days || DEFAULT_DAYS;
+      const queryKey = JSON.stringify([windowDays, project]);
+      const guard = useRef(null);
+      if (!guard.current) guard.current = requestGate();
+      guard.current.select(queryKey);
+      const [state, setState] = useState({ key: queryKey, loading: true, error: null, data: null });
+      const [tick, setTick] = useState(0);
       const load = useCallback((fresh) => {
-        const url = `${DATA_URL}?days=${windowDays}${fresh ? '&fresh=1' : ''}`;
-        fetch(url, { headers: { accept: 'application/json' } })
-          .then((response) => {
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            return response.json();
-          })
+        const ticket = guard.current.begin(queryKey);
+        fetch(feedUrl(DATA_URL, windowDays, project, fresh), { headers: { accept: 'application/json' } })
+          .then((response) => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.json(); })
           .then((data) => {
             if (!data || data.ok === false) throw new Error((data && data.error) || 'bad payload');
-            setState({ loading: false, error: null, data });
+            if (guard.current.current(ticket)) setState({ key: queryKey, loading: false, error: null, data });
           })
-          .catch((error) =>
-            setState((previous) => ({ loading: false, error: String(error && error.message), data: previous.data })),
-          );
-      }, [windowDays]);
-
+          .catch((error) => {
+            if (guard.current.current(ticket)) setState((previous) => ({ key: queryKey, loading: false, error: String(error && error.message), data: previous.key === queryKey ? previous.data : null }));
+          });
+      }, [queryKey, windowDays, project]);
       useEffect(() => {
         load(false);
         const timer = setInterval(() => load(false), 60_000);
-        return () => clearInterval(timer);
+        return () => { clearInterval(timer); guard.current.invalidate(); };
       }, [load]);
-
-      // A failed start (the host half may register its route a moment after the
-      // page boots) should not leave the widget stuck on "读取失败" for a minute.
-      const failing = !!state.error;
+      const visible = state.key === queryKey ? state : { loading: true, error: null, data: null };
       useEffect(() => {
-        if (!failing) return undefined;
+        if (!visible.error) return undefined;
         const timer = setTimeout(() => load(false), 5_000);
         return () => clearTimeout(timer);
-      }, [failing, load, state.error]);
-
+      }, [visible.error, load]);
       useEffect(() => {
         const timer = setInterval(() => setTick((value) => value + 1), 15_000);
         return () => clearInterval(timer);
       }, []);
-
-      return { ...state, tick, reload: load };
+      return { ...visible, tick, reload: load };
     }
 
     /* -------------------------------- atoms --------------------------------- */
@@ -372,7 +471,7 @@ window.__ModuleLoader__.load({
           borderRadius: 4,
           flex: 'none',
           background: props.tone,
-          boxShadow: props.glow ? `0 0 0 3px ${props.tone}22` : 'none',
+          boxShadow: props.glow ? `0 0 0 3px ${tint(props.tone, 14)}` : 'none',
         },
       });
     }
@@ -403,10 +502,11 @@ window.__ModuleLoader__.load({
       const word = loading ? t('widget.loading') : peak ? t('widget.peak') : t('widget.valley');
       const short = word.slice(0, 1) === '峰' ? '峰' : word.slice(0, 1) === '谷' ? '谷' : word;
       const wallet = data && data.wallet ? data.wallet : null;
-      const walletLevel = wallet ? wallet.level : 'unknown';
-      const walletAlert = walletLevel === 'low' || walletLevel === 'warn';
-      const walletTone = walletLevel === 'low' ? C.error : walletLevel === 'warn' ? C.peak : C.text3;
-      const walletText = walletAlert ? `${t('wallet.alert')} ${runway(wallet.runwayDays, t)}` : '';
+      const prefs = usePreferences();
+      const alert = alertState(data, prefs);
+      const walletAlert = alert.active;
+      const walletTone = alert.tone;
+      const walletText = walletAlert ? (alert.budgetExceeded ? t('alerts.exceeded') : `${t('wallet.alert')} ${runway(wallet && wallet.runwayDays, t)}`) : '';
       const remain = data ? Math.max(0, data.now.nextAt - Date.now()) : 0;
       const switchText =
         data && remain > 30_000
@@ -434,7 +534,7 @@ window.__ModuleLoader__.load({
         padding: '0 8px',
         borderRadius: 999,
         border: `1px solid ${walletAlert ? walletTone : C.border}`,
-        background: walletAlert ? `${walletTone}14` : 'transparent',
+        background: walletAlert ? tint(walletTone, 8) : 'transparent',
         fontSize: 10.5,
         lineHeight: '19px',
         color: C.text2,
@@ -445,7 +545,7 @@ window.__ModuleLoader__.load({
       };
 
       const pill = rail
-        ? h(Dot, { tone })
+        ? h(Dot, { tone: walletAlert ? walletTone : tone })
         : h(
             'span',
             { style: pillStyle },
@@ -471,7 +571,7 @@ window.__ModuleLoader__.load({
                   textOverflow: 'ellipsis',
                 },
               },
-              data ? (walletAlert ? `⚠ ${runway(wallet.runwayDays, t)}` : switchText) : '',
+              data ? (walletAlert ? `⚠ ${alert.budgetExceeded ? t('alerts.exceeded') : runway(wallet && wallet.runwayDays, t)}` : switchText) : '',
             ),
           );
 
@@ -739,14 +839,14 @@ window.__ModuleLoader__.load({
     };
 
     function ProjectTable(props) {
-      const { projects, t } = props;
+      const { projects, t, onSelect } = props;
       if (!projects || !projects.length) {
         return h('span', { style: { fontSize: 11.5, color: C.text3 } }, t('projects.empty'));
       }
       const head = [t('projects.name'), t('projects.calls'), t('projects.tokens'), t('projects.cost'), t('projects.share')];
       return h(
         'div',
-        { style: { maxHeight: 214, overflowY: 'auto', margin: '0 -2px' } },
+        { style: { maxHeight: 214, overflow: 'auto', margin: '0 -2px' } },
         h(
           'table',
           { style: { width: '100%', borderCollapse: 'collapse', fontSize: 11.5 } },
@@ -779,12 +879,12 @@ window.__ModuleLoader__.load({
                       textOverflow: 'ellipsis',
                     },
                   },
-                  project.name,
+                  h('button', { type: 'button', onClick: () => onSelect(project.key), title: project.path, style: { border: 0, background: 'transparent', padding: 0, color: C.cache, cursor: 'pointer', font: 'inherit', textAlign: 'left' } }, project.name),
                 ),
                 h('td', { style: { ...cellBody, textAlign: 'right' } }, project.calls),
                 h('td', { style: { ...cellBody, textAlign: 'right' } }, tokens(project.tokens, t)),
                 h('td', { style: { ...cellBody, textAlign: 'right' } }, yuan(project.cost)),
-                h('td', { style: { ...cellBody, textAlign: 'right', color: C.text3 } }, percent(project.share, 0)),
+                h('td', { style: { ...cellBody, textAlign: 'right', color: C.text3 } }, percent(project.share, 0), h('div', { style: { height: 3, minWidth: 38, background: C.layer2, borderRadius: 2 } }, h('div', { style: { height: '100%', width: `${Math.max(0, Math.min(100, (project.share || 0) * 100))}%`, background: C.cache, borderRadius: 2 } }))),
               ),
             ),
           ),
@@ -830,20 +930,37 @@ window.__ModuleLoader__.load({
       );
     }
 
+    function AlertSettings({ prefs, t }) {
+      const [draft, setDraft] = useState(prefs);
+      const [message, setMessage] = useState('');
+      useEffect(() => { setDraft(prefs); }, [prefs.warnDays, prefs.lowDays, prefs.dailyBudget]);
+      const rules = t('alerts.rules').replace('{warn}', prefs.warnDays).replace('{low}', prefs.lowDays);
+      return h(Card, null, h(CardTitle, { title: t('alerts.title') }),
+        h('form', { onSubmit: (event) => { event.preventDefault(); setMessage(savePrefs(draft) ? (storageFailed ? 'alerts.savedMemory' : 'alerts.saved') : 'alerts.invalid'); }, style: { display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'end' } },
+          ['warnDays', 'lowDays', 'dailyBudget'].map((key) => h('label', { key, style: { fontSize: 11, color: C.text2, display: 'flex', flexDirection: 'column', gap: 3 } },
+            t(key === 'warnDays' ? 'alerts.warn' : key === 'lowDays' ? 'alerts.low' : 'alerts.budget'),
+            h('input', { type: 'number', min: 0, step: 'any', required: key !== 'dailyBudget', value: draft[key] ?? '', onChange: (event) => { setDraft({ ...draft, [key]: event.target.value }); setMessage(''); }, style: { width: key === 'dailyBudget' ? 155 : 85, padding: 5, borderRadius: 5, border: `1px solid ${C.border}`, color: C.text, background: C.layer2 } }))),
+          h('button', { type: 'submit', style: { color: C.text, background: C.layer2, border: `1px solid ${C.border}`, padding: 5, borderRadius: 5, cursor: 'pointer' } }, t('alerts.save'))),
+        h('span', { style: { color: C.text3, fontSize: 11 } }, rules),
+        message ? h('span', { role: 'status', style: { color: message === 'alerts.invalid' ? C.error : C.valley, fontSize: 11 } }, t(message)) : null);
+    }
+
     /* -------------------------------- settings ------------------------------- */
 
     function Dashboard(props) {
       const t = props.t;
       const [days, setDays] = useState(props.days || 14);
-      const feed = useFeed(days);
+      const [project, setProject] = useState('');
+      const feed = useFeed(days, project);
       const data = feed.data;
       const windowDays = (data && data.windowDays) || days;
       const peakNow = data ? data.now.peak : false;
       const wallet = data && data.wallet ? data.wallet : null;
-      const walletLevel = wallet ? wallet.level : 'unknown';
-      const walletAlert = walletLevel === 'low' || walletLevel === 'warn';
-      const walletTone = walletLevel === 'low' ? C.error : walletLevel === 'warn' ? C.peak : C.text3;
-      const runwayLabel = walletAlert ? t('wallet.alert') : t('wallet.runway');
+      const prefs = usePreferences();
+      const alert = alertState(data, prefs);
+      const walletAlert = alert.active;
+      const walletTone = alert.tone;
+      const runwayLabel = alert.walletLevel === 'low' || alert.walletLevel === 'warn' ? t('wallet.alert') : t('wallet.runway');
       const remain = data ? Math.max(0, data.now.nextAt - Date.now()) : 0;
       const switchText =
         data && remain > 30_000
@@ -892,7 +1009,7 @@ window.__ModuleLoader__.load({
             { key: 'pills', style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
             h(
               Pill,
-              { style: { background: peakNow ? `${C.peak}1a` : `${C.valley}1a`, borderColor: 'transparent' } },
+              { style: { background: peakNow ? tint(C.peak) : tint(C.valley), borderColor: 'transparent' } },
               h(Dot, { tone: peakNow ? C.peak : C.valley, glow: true }),
               h(
                 'span',
@@ -907,7 +1024,7 @@ window.__ModuleLoader__.load({
             h(
               Pill,
               {
-                style: walletAlert ? { borderColor: walletTone, background: `${walletTone}1a` } : null,
+                style: walletAlert ? { borderColor: walletTone, background: tint(walletTone) } : null,
                 title:
                   wallet && wallet.avgPerDay
                     ? `${t('wallet.avg')} ${yuan(wallet.avgPerDay)} · ${t('kpi.runwayHint')}`
@@ -923,7 +1040,7 @@ window.__ModuleLoader__.load({
                 ? h(
                     'span',
                     { style: { color: walletTone, fontWeight: 600 } },
-                    ` · ${runwayLabel} ${runway(wallet.runwayDays, t)}`,
+                    ` · ${runwayLabel} ${runway(wallet.runwayDays, t)}${alert.budgetExceeded ? ` · ${t('alerts.exceeded')}` : ''}`,
                   )
                 : null,
             ),
@@ -963,7 +1080,7 @@ window.__ModuleLoader__.load({
               tone: walletAlert ? walletTone : C.text,
               hint:
                 wallet && wallet.balance !== null
-                  ? `${t('kpi.balance')} ${yuan(wallet.balance)} · ${t('wallet.avg')} ${yuan(wallet.avgPerDay)}`
+                  ? `${t('kpi.balance')} ${yuan(wallet.balance)} · ${t('wallet.avg')} ${yuan(wallet.avgPerDay)}${alert.budgetExceeded ? ` · ${t('alerts.exceeded')}` : ''}`
                   : t('kpi.runwayHint'),
             }),
             h(Kpi, {
@@ -1038,7 +1155,7 @@ window.__ModuleLoader__.load({
         body.push(
           h(
             'div',
-            { key: 'breakdown', style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1.5fr) minmax(0, 1fr)', gap: 10 } },
+            { key: 'breakdown', style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 330px), 1fr))', gap: 10 } },
             h(
               Card,
               null,
@@ -1048,7 +1165,7 @@ window.__ModuleLoader__.load({
                 action: h(
                   'a',
                   {
-                    href: `${EXPORT_URL}?days=${windowDays}&scope=projects`,
+                    href: `${feedUrl(EXPORT_URL, windowDays, project)}&scope=projects`,
                     download: '',
                     title: t('export.projectsTitle'),
                     style: { color: C.cache, textDecoration: 'none', fontWeight: 500 },
@@ -1056,7 +1173,7 @@ window.__ModuleLoader__.load({
                   t('export.projects'),
                 ),
               }),
-              h(ProjectTable, { projects: data.projects, t }),
+              h(ProjectTable, { projects: data.projects, t, onSelect: setProject }),
             ),
             h(
               Card,
@@ -1147,7 +1264,7 @@ window.__ModuleLoader__.load({
           h(
             'a',
             {
-              href: `${EXPORT_URL}?days=${windowDays}`,
+              href: feedUrl(EXPORT_URL, windowDays, project),
               download: '',
               title: t('export.daysTitle'),
               style: {
@@ -1163,6 +1280,16 @@ window.__ModuleLoader__.load({
             t('export.csv'),
           ),
         ),
+        h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' } },
+          h('label', { style: { minWidth: 0, maxWidth: '100%' } }, t('projects.select'), ' ', h('select', { value: project, onChange: (event) => setProject(event.target.value), style: { color: C.text, background: C.layer1, border: `1px solid ${C.border}`, padding: 5, borderRadius: 6, maxWidth: '100%', minWidth: 0 } },
+            h('option', { value: '' }, t('projects.all')),
+            project && !(data && data.projectOptions || []).some((entry) => entry.key === project) ? h('option', { value: project }, project) : null,
+            ((data && data.projectOptions) || []).map((entry) => h('option', { key: entry.key, value: entry.key }, entry.name)))) ,
+          project ? h(Pill, { title: data && data.selectedProject ? data.selectedProject.path : project }, data && data.selectedProject ? data.selectedProject.name : project,
+            h('button', { type: 'button', onClick: () => setProject(''), 'aria-label': t('projects.clear'), style: { border: 0, background: 'transparent', color: C.text, cursor: 'pointer' } }, '×')) : null),
+        h(AlertSettings, { prefs, t }),
+        feed.error && data ? h('div', { role: 'status', style: { color: C.peak, fontSize: 12 } }, t('page.error'), ': ', feed.error, ' ', h('button', { type: 'button', onClick: () => feed.reload(true) }, t('page.retry'))) : null,
+        alert.budgetExceeded ? h(Pill, { style: { color: alert.tone, borderColor: alert.tone } }, t('alerts.exceeded'), ' · ', t('alerts.global'), ' ', yuan(data && data.globalTodayCost)) : null,
         body,
         h(
           'footer',
