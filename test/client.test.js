@@ -10,7 +10,7 @@ function helpers(storage = {}) {
   const context = { window: { localStorage: storage, dispatchEvent: (event) => events.push(event) }, CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } }, C: { error: 'red', peak: 'amber', text3: 'gray' }, DATA_URL: '/data', DEFAULT_DAYS: 14 };
   const start = source.indexOf("    const PREFS_KEY =");
   const stop = source.indexOf('    function useFeed(', start);
-  vm.runInNewContext(source.slice(start, stop) + '\nthis.api = { validatePrefs, readPrefs, savePrefs, alertState, feedUrl, requestGate, tint, pillStatus };', context);
+  vm.runInNewContext(source.slice(start, stop) + '\nthis.api = { validatePrefs, readPrefs, savePrefs, alertState, feedUrl, requestGate, tint, pillStatus, validatePricing, readPricing, savePricing, encodePricing, pricingParam, clonePricing, DEFAULT_PRICING };', context);
   return { ...context.api, events };
 }
 const plain = (value) => JSON.parse(JSON.stringify(value));
@@ -101,4 +101,58 @@ test('client uses valid CSS color mixing and native keyboard buttons', () => {
   assert.match(source, /onClick: \(\) => onSelect\(project.key\)/);
   assert.match(source, /'aria-label': t\('projects.clear'\)/);
   assert.match(source, /window.addEventListener\('storage', sync\)/);
+});
+
+test('client pricing validation rejects malformed tables and normalizes numeric strings', () => {
+  const api = helpers();
+  assert.equal(api.validatePricing(null), null);
+  assert.equal(api.validatePricing([]), null);
+  assert.equal(api.validatePricing([{ id: 'flash' }, { id: 'pro' }]), null);
+  const duplicate = api.clonePricing(api.DEFAULT_PRICING);
+  duplicate[1].id = 'flash';
+  assert.equal(api.validatePricing(duplicate), null);
+  for (const bad of [-1, Infinity, NaN, '', 'abc', true]) {
+    const table = api.clonePricing(api.DEFAULT_PRICING);
+    table[0].hit[0] = bad;
+    assert.equal(api.validatePricing(table), null);
+  }
+  const table = api.clonePricing(api.DEFAULT_PRICING);
+  table[0].hit = ['0.5', '1'];
+  assert.deepEqual(plain(api.validatePricing(table)[0].hit), [0.5, 1]);
+  assert.equal(api.validatePricing(table)[0].label, 'DeepSeek Flash');
+});
+
+test('client custom pricing round-trips through localStorage and emits a sync event', () => {
+  const api = helpers();
+  const custom = api.clonePricing(api.DEFAULT_PRICING);
+  custom[0].miss = [0.5, 1];
+  assert.equal(api.validatePricing(custom)[0].miss[1], 1);
+  assert.notEqual(api.pricingParam(custom), '');
+  assert.equal(api.pricingParam(api.DEFAULT_PRICING), '');
+  assert.equal(api.pricingParam(null), '');
+  const encoded = api.encodePricing(custom);
+  assert.match(encoded, /^flash:/);
+  assert.equal(api.savePricing(custom), true);
+  assert.equal(api.events.at(-1).type, 'dsh-usage-peak:pricing-change');
+  assert.deepEqual(plain(api.readPricing()), plain(custom));
+  assert.equal(api.savePricing([{ id: 'flash' }]), false);
+});
+
+test('client pricing storage failures keep this page usable', () => {
+  const api = helpers({ getItem() { throw Error('blocked'); }, setItem() { throw Error('quota'); } });
+  const custom = api.clonePricing(api.DEFAULT_PRICING);
+  custom[1].out = [20, 40];
+  assert.equal(api.savePricing(custom), true);
+  assert.deepEqual(plain(api.readPricing())[1].out, [20, 40]);
+  assert.equal(api.events.at(-1).type, 'dsh-usage-peak:pricing-change');
+});
+
+test('client feed URLs include only non-default pricing', () => {
+  const api = helpers();
+  const custom = api.clonePricing(api.DEFAULT_PRICING);
+  custom[0].hit = [0.01, 0.02];
+  const encoded = api.encodePricing(custom);
+  assert.equal(api.feedUrl('/data', 7, '', false, custom), `/data?days=7&pricing=${encodeURIComponent(encoded)}`);
+  assert.equal(api.feedUrl('/data', 7, '', false, api.DEFAULT_PRICING), '/data?days=7');
+  assert.equal(api.feedUrl('/data', 7, '', true, custom), `/data?days=7&pricing=${encodeURIComponent(encoded)}&fresh=1`);
 });

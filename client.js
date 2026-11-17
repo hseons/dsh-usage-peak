@@ -53,6 +53,7 @@ window.__ModuleLoader__.load({
         'unit.calls': '次',
         'unit.minute': '分',
         'warn.unknownModel': '未识别的模型按 Flash 价计算',
+        'warn.pricingInvalid': '自定义价目参数无效，已回退默认价目',
         'warn.calendarMissing': '以下年份还没有节假日数据，峰谷按周一至周五计算：',
         'footer.calendar': '峰谷已计入节假日与调休：',
         'footer.star': '给个 Star',
@@ -133,6 +134,20 @@ window.__ModuleLoader__.load({
         'price.miss': '未命中',
         'price.out': '输出',
         'price.current': '当前',
+        'price.custom': '自定义价目',
+        'pricing.title': '自定义价目表',
+        'pricing.hint': '仅保存在本机；保存后所有金额与 CSV 立即按新价目重算。',
+        'pricing.cache': '缓存命中',
+        'pricing.input': '输入',
+        'pricing.output': '输出',
+        'pricing.valley': '谷',
+        'pricing.peak': '峰',
+        'pricing.save': '保存价目',
+        'pricing.reset': '恢复默认',
+        'pricing.saved': '已应用自定义价目；当前页面所有面板同步生效。',
+        'pricing.savedMemory': '存储不可用；仅本页生效，关闭页面后会丢失。',
+        'pricing.invalid': '请填写 0 或有限正数价格。',
+        'pricing.resetDone': '已恢复默认价目。',
       },
       en: {
         'settings.title': 'Usage dashboard',
@@ -165,6 +180,7 @@ window.__ModuleLoader__.load({
         'unit.calls': 'req',
         'unit.minute': 'm',
         'warn.unknownModel': 'Unknown models are priced as Flash',
+        'warn.pricingInvalid': 'Invalid custom pricing; reverted to the default price list',
         'warn.calendarMissing': 'No holiday data for these years, peak hours fall back to Mon-Fri:',
         'footer.calendar': 'Peak hours include holidays and makeup workdays:',
         'footer.star': 'Star it',
@@ -245,6 +261,20 @@ window.__ModuleLoader__.load({
         'price.miss': 'Miss',
         'price.out': 'Output',
         'price.current': 'now',
+        'price.custom': 'custom pricing',
+        'pricing.title': 'Custom price list',
+        'pricing.hint': 'Stored only in this browser; saving recalculates every figure and CSV immediately.',
+        'pricing.cache': 'Cache hit',
+        'pricing.input': 'Input',
+        'pricing.output': 'Output',
+        'pricing.valley': 'valley',
+        'pricing.peak': 'peak',
+        'pricing.save': 'Save prices',
+        'pricing.reset': 'Restore defaults',
+        'pricing.saved': 'Custom pricing applied; all panels on this page are synchronized.',
+        'pricing.savedMemory': 'Storage unavailable; applies only to this page until it closes.',
+        'pricing.invalid': 'Enter 0 or a finite positive price.',
+        'pricing.resetDone': 'Default prices restored.',
       },
     };
 
@@ -325,7 +355,98 @@ window.__ModuleLoader__.load({
     const PREFS_KEY = 'dsh-usage-peak:alerts:v1';
     const PREFS_EVENT = 'dsh-usage-peak:alerts-change';
     const DEFAULT_PREFS = { warnDays: 7, lowDays: 3, dailyBudget: null };
+    const PRICING_KEY = 'dsh-usage-peak:pricing:v1';
+    const PRICING_EVENT = 'dsh-usage-peak:pricing-change';
+    const DEFAULT_PRICING = [
+      { id: 'flash', label: 'DeepSeek Flash', hit: [0.02, 0.04], miss: [1, 2], out: [4, 8] },
+      { id: 'pro', label: 'DeepSeek Pro', hit: [0.15, 0.3], miss: [4.5, 9], out: [13.5, 27] },
+    ];
+    const PRICING_IDS = DEFAULT_PRICING.map((price) => price.id);
+    const PRICING_MAX = 1e7;
     const tint = (color, amount = 10) => `color-mix(in srgb, ${color} ${amount}%, transparent)`;
+
+    function clonePricing(table) {
+      return (table || DEFAULT_PRICING).map((price) => ({
+        id: price.id,
+        label: price.label,
+        hit: [...price.hit],
+        miss: [...price.miss],
+        out: [...price.out],
+      }));
+    }
+
+    function validatePricing(value) {
+      if (!Array.isArray(value) || value.length !== PRICING_IDS.length) return null;
+      const byId = new Map();
+      for (const entry of value) {
+        if (!entry || typeof entry !== 'object' || !PRICING_IDS.includes(entry.id) || byId.has(entry.id)) return null;
+        const pair = (values) => {
+          if (!Array.isArray(values) || values.length !== 2) return null;
+          const nums = values.map((v) => {
+            if (typeof v === 'number') return v;
+            if (typeof v === 'string' && v.trim() !== '') return Number(v);
+            return NaN;
+          });
+          if (!nums.every((n) => Number.isFinite(n) && n >= 0 && n <= PRICING_MAX)) return null;
+          return nums;
+        };
+        const hit = pair(entry.hit);
+        const miss = pair(entry.miss);
+        const out = pair(entry.out);
+        if (!hit || !miss || !out) return null;
+        const base = DEFAULT_PRICING.find((price) => price.id === entry.id);
+        byId.set(entry.id, { id: entry.id, label: base.label, hit, miss, out });
+      }
+      return PRICING_IDS.every((id) => byId.has(id)) ? PRICING_IDS.map((id) => byId.get(id)) : null;
+    }
+
+    function encodePricing(table) {
+      const normalized = validatePricing(table);
+      if (!normalized) return '';
+      return normalized
+        .map((price) => `${price.id}:${[...price.hit, ...price.miss, ...price.out].join(',')}`)
+        .join('|');
+    }
+
+    function pricingParam(table) {
+      if (!table) return '';
+      const encoded = encodePricing(table);
+      return encoded && encoded !== encodePricing(DEFAULT_PRICING) ? encoded : '';
+    }
+
+    let memoryPricing = clonePricing(DEFAULT_PRICING);
+    let pricingStorageFailed = false;
+    function readPricing() {
+      if (pricingStorageFailed) return clonePricing(memoryPricing);
+      try {
+        const raw = window.localStorage.getItem(PRICING_KEY);
+        if (raw !== null) memoryPricing = validatePricing(JSON.parse(raw)) || clonePricing(DEFAULT_PRICING);
+      } catch { /* Disabled storage: retain this page's last valid prices. */ }
+      return clonePricing(memoryPricing);
+    }
+    function savePricing(value) {
+      const next = validatePricing(value);
+      if (!next) return false;
+      memoryPricing = next;
+      try { window.localStorage.setItem(PRICING_KEY, JSON.stringify(next)); pricingStorageFailed = false; } catch { pricingStorageFailed = true; }
+      window.dispatchEvent(new CustomEvent(PRICING_EVENT, { detail: next }));
+      return true;
+    }
+    function usePricing() {
+      const [pricing, setPricing] = useState(readPricing);
+      useEffect(() => {
+        const sync = (event) => {
+          if (event.type === 'storage' && event.key !== PRICING_KEY && event.key !== null) return;
+          if (event.type === 'storage') pricingStorageFailed = false;
+          if (event.type === 'storage' && event.key === PRICING_KEY && event.newValue === null) memoryPricing = clonePricing(DEFAULT_PRICING);
+          setPricing(event.type === PRICING_EVENT ? clonePricing(memoryPricing) : readPricing());
+        };
+        window.addEventListener(PRICING_EVENT, sync);
+        window.addEventListener('storage', sync);
+        return () => { window.removeEventListener(PRICING_EVENT, sync); window.removeEventListener('storage', sync); };
+      }, []);
+      return pricing;
+    }
 
     function validatePrefs(value) {
       if (!value || typeof value !== 'object') return null;
@@ -384,8 +505,9 @@ window.__ModuleLoader__.load({
         active: rank[level] > 0, tone: level === 'low' ? C.error : level === 'warn' ? C.peak : C.text3 };
     }
 
-    function feedUrl(base, days, project, fresh = false) {
-      return `${base}?days=${days || DEFAULT_DAYS}${project ? `&project=${encodeURIComponent(project)}` : ''}${fresh ? '&fresh=1' : ''}`;
+    function feedUrl(base, days, project, fresh = false, pricing = '') {
+      const pricePart = typeof pricing === 'string' ? pricing : pricingParam(pricing);
+      return `${base}?days=${days || DEFAULT_DAYS}${project ? `&project=${encodeURIComponent(project)}` : ''}${pricePart ? `&pricing=${encodeURIComponent(pricePart)}` : ''}${fresh ? '&fresh=1' : ''}`;
     }
 
     // Keep the peak/valley countdown visible in the pill; the warning is an
@@ -405,9 +527,10 @@ window.__ModuleLoader__.load({
         invalidate() { serial += 1; },
       };
     }
-    function useFeed(days, project = '') {
+    function useFeed(days, project = '', pricing = null) {
       const windowDays = days || DEFAULT_DAYS;
-      const queryKey = JSON.stringify([windowDays, project]);
+      const pricingKey = pricingParam(pricing);
+      const queryKey = JSON.stringify([windowDays, project, pricingKey]);
       const guard = useRef(null);
       if (!guard.current) guard.current = requestGate();
       guard.current.select(queryKey);
@@ -415,7 +538,7 @@ window.__ModuleLoader__.load({
       const [tick, setTick] = useState(0);
       const load = useCallback((fresh) => {
         const ticket = guard.current.begin(queryKey);
-        fetch(feedUrl(DATA_URL, windowDays, project, fresh), { headers: { accept: 'application/json' } })
+        fetch(feedUrl(DATA_URL, windowDays, project, fresh, pricingKey), { headers: { accept: 'application/json' } })
           .then((response) => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.json(); })
           .then((data) => {
             if (!data || data.ok === false) throw new Error((data && data.error) || 'bad payload');
@@ -424,7 +547,7 @@ window.__ModuleLoader__.load({
           .catch((error) => {
             if (guard.current.current(ticket)) setState((previous) => ({ key: queryKey, loading: false, error: String(error && error.message), data: previous.key === queryKey ? previous.data : null }));
           });
-      }, [queryKey, windowDays, project]);
+      }, [queryKey, windowDays, project, pricingKey]);
       useEffect(() => {
         load(false);
         const timer = setInterval(() => load(false), 60_000);
@@ -497,7 +620,8 @@ window.__ModuleLoader__.load({
      */
     function PanelGlyph(props) {
       const t = props.t;
-      const { data } = useFeed();
+      const pricing = usePricing();
+      const { data } = useFeed(DEFAULT_DAYS, '', pricing);
       const rail = !!props.rail;
       const open = typeof props.onOpen === 'function' ? props.onOpen : null;
       const rootProps = { 'data-usage-widget': '', title: '' };
@@ -951,13 +1075,77 @@ window.__ModuleLoader__.load({
         message ? h('span', { role: 'status', style: { color: message === 'alerts.invalid' ? C.error : C.valley, fontSize: 11 } }, t(message)) : null);
     }
 
+    function PricingSettings(props) {
+      const { pricing, t } = props;
+      const pricingKey = encodePricing(pricing);
+      const [draft, setDraft] = useState(() => clonePricing(pricing));
+      const [message, setMessage] = useState('');
+      useEffect(() => { setDraft(clonePricing(pricing)); }, [pricingKey]);
+      const fields = [['hit', 'pricing.cache'], ['miss', 'pricing.input'], ['out', 'pricing.output']];
+      const buttonStyle = { color: C.text, background: C.layer2, border: `1px solid ${C.border}`, padding: '5px 12px', borderRadius: 5, cursor: 'pointer' };
+      const priceInput = (model, modelIndex, field, offset) => h('input', {
+        key: offset,
+        type: 'number',
+        min: 0,
+        step: 'any',
+        inputMode: 'decimal',
+        'aria-label': `${model.label} ${fields.find(([name]) => name === field)[1]} ${offset ? t('pricing.peak') : t('pricing.valley')}`,
+        value: model[field][offset],
+        onChange: (event) => {
+          const raw = event.target.value;
+          setDraft((previous) => previous.map((entry, index) => (index === modelIndex ? { ...entry, [field]: entry[field].map((value, i) => (i === offset ? raw : value)) } : entry)));
+          setMessage('');
+        },
+        style: { width: 62, padding: '4px 5px', borderRadius: 5, border: `1px solid ${C.border}`, color: C.text, background: C.layer2, fontVariantNumeric: 'tabular-nums' },
+      });
+      const gridStyle = { display: 'grid', gridTemplateColumns: 'minmax(110px, 1.2fr) repeat(3, minmax(120px, 1fr))', gap: 8, alignItems: 'center' };
+      const header = h('div', { style: { ...gridStyle, fontSize: 10.5, color: C.text3 } },
+        h('span', { key: 'model' }, t('price.model')),
+        fields.map(([field, key]) => h('span', { key: field }, `${t(key)} (${t('pricing.valley')} / ${t('pricing.peak')})`)));
+      const rows = draft.map((model, modelIndex) => h('div', { key: model.id, style: gridStyle },
+        h('span', { key: 'label', style: { fontSize: 11.5, color: C.text } }, model.label),
+        fields.map(([field, key]) => h('span', { key: field, style: { display: 'flex', alignItems: 'center', gap: 3 } },
+          priceInput(model, modelIndex, field, 0),
+          h('span', { key: 'sep', style: { color: C.text3, fontSize: 10 } }, '/'),
+          priceInput(model, modelIndex, field, 1)))));
+      return h(Card, null,
+        h(CardTitle, { title: t('pricing.title'), hint: t('pricing.hint') }),
+        h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } }, header, rows),
+        h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+          h('button', {
+            type: 'button',
+            onClick: () => {
+              if (savePricing(draft)) {
+                setDraft(clonePricing(readPricing()));
+                setMessage(pricingStorageFailed ? 'pricing.savedMemory' : 'pricing.saved');
+              } else {
+                setMessage('pricing.invalid');
+              }
+            },
+            style: buttonStyle,
+          }, t('pricing.save')),
+          h('button', {
+            type: 'button',
+            onClick: () => {
+              savePricing(clonePricing(DEFAULT_PRICING));
+              setDraft(clonePricing(DEFAULT_PRICING));
+              setMessage('pricing.resetDone');
+            },
+            style: buttonStyle,
+          }, t('pricing.reset')),
+          message ? h('span', { role: 'status', style: { fontSize: 11, color: message === 'pricing.invalid' ? C.error : C.valley } }, t(message)) : null),
+      );
+    }
+
     /* -------------------------------- settings ------------------------------- */
 
     function Dashboard(props) {
       const t = props.t;
       const [days, setDays] = useState(props.days || 14);
       const [project, setProject] = useState('');
-      const feed = useFeed(days, project);
+      const pricing = usePricing();
+      const pricingKey = pricingParam(pricing);
+      const feed = useFeed(days, project, pricing);
       const data = feed.data;
       const windowDays = (data && data.windowDays) || days;
       const peakNow = data ? data.now.peak : false;
@@ -1067,7 +1255,9 @@ window.__ModuleLoader__.load({
                     ? warning
                     : warning.code === 'unknown-model'
                       ? `${t('warn.unknownModel')}: ${(warning.models || []).join(', ')}`
-                      : warning.code === 'calendar-missing'
+                      : warning.code === 'pricing-invalid'
+                        ? t('warn.pricingInvalid')
+                        : warning.code === 'calendar-missing'
                         ? `${t('warn.calendarMissing')} ${(warning.years || []).join(' / ')}`
                         : String(warning.code || warning),
                 ),
@@ -1171,7 +1361,7 @@ window.__ModuleLoader__.load({
                 action: h(
                   'a',
                   {
-                    href: `${feedUrl(EXPORT_URL, windowDays, project)}&scope=projects`,
+                    href: `${feedUrl(EXPORT_URL, windowDays, project, false, pricingKey)}&scope=projects`,
                     download: '',
                     title: t('export.projectsTitle'),
                     style: { color: C.cache, textDecoration: 'none', fontWeight: 500 },
@@ -1194,10 +1384,12 @@ window.__ModuleLoader__.load({
           h(
             Card,
             { key: 'price' },
-            h(CardTitle, { title: t('price.title'), hint: t('price.hint') }),
+            h(CardTitle, { title: t('price.title'), hint: `${t('price.hint')}${data.pricingCustom ? ` · ${t('price.custom')}` : ''}` }),
             h(PriceTable, { pricing: data.pricing, peakNow, t }),
           ),
         );
+
+        body.push(h(PricingSettings, { key: 'pricing-settings', pricing, t }));
       }
 
       return h(
@@ -1270,7 +1462,7 @@ window.__ModuleLoader__.load({
           h(
             'a',
             {
-              href: feedUrl(EXPORT_URL, windowDays, project),
+              href: feedUrl(EXPORT_URL, windowDays, project, false, pricingKey),
               download: '',
               title: t('export.daysTitle'),
               style: {

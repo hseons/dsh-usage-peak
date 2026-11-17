@@ -33,11 +33,87 @@ const PRICING = [
   { id: 'flash', label: 'DeepSeek Flash', match: 'flash', hit: [0.02, 0.04], miss: [1, 2], out: [4, 8] },
   { id: 'pro', label: 'DeepSeek Pro', match: 'pro', hit: [0.15, 0.3], miss: [4.5, 9], out: [13.5, 27] },
 ];
+const PRICING_IDS = PRICING.map((price) => price.id);
+const PRICING_MAX = 1e7;
 
-export function priceFor(model) {
+function clonePricing(table) {
+  return table.map((price) => ({
+    id: price.id,
+    label: price.label,
+    match: price.match,
+    hit: [...price.hit],
+    miss: [...price.miss],
+    out: [...price.out],
+  }));
+}
+
+/**
+ * Validate a complete custom price table.
+ *
+ * The table must carry exactly the known model ids once each; every number is
+ * CNY per million tokens and must be finite, non-negative, and bounded. We keep
+ * the model labels/matchers from the built-in table so custom prices cannot
+ * smuggle in arbitrary model routing.
+ */
+export function normalizePricing(value) {
+  if (!Array.isArray(value) || value.length !== PRICING_IDS.length) return null;
+  const byId = new Map();
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object') return null;
+    if (!PRICING_IDS.includes(entry.id) || byId.has(entry.id)) return null;
+    const pair = (values) => {
+      if (!Array.isArray(values) || values.length !== 2) return null;
+      if (!values.every((n) => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= PRICING_MAX)) return null;
+      return [...values];
+    };
+    const hit = pair(entry.hit);
+    const miss = pair(entry.miss);
+    const out = pair(entry.out);
+    if (!hit || !miss || !out) return null;
+    const base = PRICING.find((price) => price.id === entry.id);
+    byId.set(entry.id, { id: entry.id, label: base.label, match: base.match, hit, miss, out });
+  }
+  return PRICING_IDS.every((id) => byId.has(id)) ? PRICING_IDS.map((id) => byId.get(id)) : null;
+}
+
+/** Compact URL form: `flash:hitV,hitP,missV,missP,outV,outP|pro:...`. */
+export function encodePricing(table) {
+  const normalized = normalizePricing(table);
+  if (!normalized) return '';
+  return normalized
+    .map((price) => `${price.id}:${[...price.hit, ...price.miss, ...price.out].join(',')}`)
+    .join('|');
+}
+
+export function parsePricingParam(raw) {
+  if (typeof raw !== 'string' || raw === '' || raw.length > 512) return null;
+  const table = [];
+  for (const part of raw.split('|')) {
+    const pieces = part.split(':');
+    if (pieces.length !== 2) return null;
+    const id = pieces[0];
+    const values = pieces[1].split(',').map((value) => (value.trim() === '' ? NaN : Number(value)));
+    if (id === '' || values.length !== 6) return null;
+    table.push({ id, hit: values.slice(0, 2), miss: values.slice(2, 4), out: values.slice(4, 6) });
+  }
+  return normalizePricing(table);
+}
+
+/** Default table plus whether the caller supplied an invalid override. */
+export function resolvePricing(raw) {
+  const supplied = raw !== null && raw !== undefined && raw !== '';
+  const parsed = supplied ? parsePricingParam(raw) : null;
+  if (parsed) return { pricing: parsed, custom: true, invalid: false };
+  return { pricing: clonePricing(PRICING), custom: false, invalid: supplied };
+}
+
+export function priceFor(model, pricing = PRICING) {
   const name = String(model || '').toLowerCase();
-  if (name.includes('pro')) return PRICING[1];
-  return PRICING[0];
+  // Pro wins over flash when both substrings appear; iterate from the pro end.
+  for (let index = pricing.length - 1; index >= 0; index -= 1) {
+    if (name.includes(pricing[index].match)) return pricing[index];
+  }
+  return pricing[0] || PRICING[0];
 }
 
 export function bjDate(ts) {
@@ -185,8 +261,16 @@ export function parseSessionTurns(text, project) {
     const usage = record.data && record.data.usage;
     if (!usage) continue;
     const model = (record.data.message && record.data.message.source && record.data.message.source.model) || 'unknown';
+    // Bill by request start, not completion: the first streamed chunk is emitted
+    // when the provider starts answering, while record.time is the final chunk.
+    let startedAt = null;
+    if (Array.isArray(record.data.stream)) {
+      for (const chunk of record.data.stream) {
+        if (chunk && typeof chunk.time === 'number' && (startedAt === null || chunk.time < startedAt)) startedAt = chunk.time;
+      }
+    }
     const turn = {
-      t: record.time,
+      t: startedAt === null ? record.time : startedAt,
       model,
       input: usage.inputTokens || 0,
       cache: usage.cacheReadTokens || 0,
@@ -271,6 +355,8 @@ export function emptyDay(day) {
     costOut: 0,
     peakCost: 0,
     valleyCost: 0,
+    // What the peak-time tokens would have cost at that model's valley rates.
+    peakAtValleyCost: 0,
     hours,
     models: {},
     firstAt: 0,
@@ -278,8 +364,8 @@ export function emptyDay(day) {
   };
 }
 
-export function addTurn(day, turn) {
-  const price = priceFor(turn.model);
+export function addTurn(day, turn, pricing = PRICING) {
+  const price = priceFor(turn.model, pricing);
   const peak = isPeakAt(turn.t);
   const offset = peak ? 1 : 0;
   const costCache = (turn.cache / 1e6) * price.hit[offset];
@@ -295,8 +381,13 @@ export function addTurn(day, turn) {
   day.costCache += costCache;
   day.costMiss += costMiss;
   day.costOut += costOut;
-  if (peak) day.peakCost += cost;
-  else day.valleyCost += cost;
+  if (peak) {
+    day.peakCost += cost;
+    day.peakAtValleyCost +=
+      (turn.cache / 1e6) * price.hit[0] + (turn.input / 1e6) * price.miss[0] + (turn.output / 1e6) * price.out[0];
+  } else {
+    day.valleyCost += cost;
+  }
   if (!day.firstAt || turn.t < day.firstAt) day.firstAt = turn.t;
   if (turn.t > day.lastAt) day.lastAt = turn.t;
 
@@ -349,8 +440,9 @@ export function shapeDay(day) {
     costOut: round(day.costOut),
     peakCost: round(day.peakCost),
     valleyCost: round(day.valleyCost),
-    // Peak is exactly 2x valley, so moving these peak tokens to valley saves half.
-    savingIfValley: round(day.peakCost / 2),
+    // How much the peak-time tokens would save at valley rates (can be negative
+    // when a custom tariff makes peak cheaper than valley).
+    savingIfValley: round(day.peakCost - day.peakAtValleyCost),
     peakShare: day.cost > 0 ? day.peakCost / day.cost : 0,
     holiday: OFF_DAYS.get(day.day) || null,
     hitRate: billable > 0 ? day.cacheTokens / billable : 0,
@@ -413,12 +505,13 @@ export function walletSummary(balance, avgPerDay) {
 export function aggregateTurns(turns, options = {}) {
   const now = Number.isFinite(options.now) ? options.now : Date.now();
   const days = normalizeDays(options.days);
+  const pricing = Array.isArray(options.pricing) ? normalizePricing(options.pricing) || PRICING : PRICING;
   // Keys are opaque identities: do not trim, prefix-match, or URL-decode here.
   // URLSearchParams already performs the single required HTTP decoding pass.
   const projectKey = typeof options.project === 'string' && options.project !== '' ? options.project : null;
   if (projectKey !== null) {
-    const global = aggregateTurns(turns, { now, days });
-    const filtered = aggregateTurns((turns || []).filter((turn) => turn?.project?.key === projectKey), { now, days });
+    const global = aggregateTurns(turns, { now, days, pricing });
+    const filtered = aggregateTurns((turns || []).filter((turn) => turn?.project?.key === projectKey), { now, days, pricing });
     const known = global.projects.find((project) => project.key === projectKey);
     const selectedProject = known
       ? { key: known.key, name: known.name, path: known.path }
@@ -441,7 +534,7 @@ export function aggregateTurns(turns, options = {}) {
       day = emptyDay(key);
       byDay.set(key, day);
     }
-    const priced = addTurn(day, turn);
+    const priced = addTurn(day, turn, pricing);
     if (!/flash|pro/i.test(turn.model)) unknownModels.add(turn.model);
     if (turn.project && turn.project.key) {
       let project = byProject.get(turn.project.key);
@@ -490,7 +583,7 @@ export function aggregateTurns(turns, options = {}) {
     { cost: 0, calls: 0, tokens: 0, peakCost: 0, costCache: 0, costMiss: 0, costOut: 0, savingIfValley: 0, days: 0 },
   );
 
-  const models = PRICING.map((price) => {
+  const models = pricing.map((price) => {
     let calls = 0;
     let cost = 0;
     let tokens = 0;
@@ -546,18 +639,21 @@ export function buildSnapshot(options = {}) {
   const now = Number.isFinite(options.now) ? options.now : Date.now();
   const days = normalizeDays(options.days);
   const project = typeof options.project === 'string' && options.project !== '' ? options.project : null;
-  const cacheKey = JSON.stringify([days, project]);
+  const resolved = resolvePricing(options.pricing);
+  const pricing = resolved.pricing;
+  const pricingKey = resolved.custom ? encodePricing(pricing) : '';
+  const cacheKey = JSON.stringify([days, project, pricingKey]);
   const cached = snapshotCache.get(cacheKey);
   if (cached && !options.fresh && now >= cached.builtAt && now - cached.builtAt < SNAPSHOT_TTL_MS) return cached.payload;
 
   const turns = collectTurns();
-  const global = aggregateTurns(turns, { now, days });
+  const global = aggregateTurns(turns, { now, days, pricing });
   // Reuse the already-built directory rather than aggregating all projects twice.
   const selected = project === null ? null : global.projects.find((entry) => entry.key === project);
   const selectedProject = project === null ? null : selected
     ? { key: selected.key, name: selected.name, path: selected.path }
     : { key: project, name: path.basename(project) || project, path: project };
-  const agg = project === null ? global : aggregateTurns(turns.filter((turn) => turn.project?.key === project), { now, days });
+  const agg = project === null ? global : aggregateTurns(turns.filter((turn) => turn.project?.key === project), { now, days, pricing });
   const ledger = readLedger();
   // Ledger values are account-level, not attributable to an individual project.
   if (ledger.ok && project === null) {
@@ -569,7 +665,7 @@ export function buildSnapshot(options = {}) {
 
   const switchPoint = nextSwitch(now);
   const peakNow = isPeakAt(now);
-  const currentPrice = PRICING[0];
+  const currentPrice = pricing[0];
 
   const payload = {
     ok: true,
@@ -603,15 +699,19 @@ export function buildSnapshot(options = {}) {
     week: agg.week,
     wallet: walletSummary(ledger.ok ? ledger.balance : null, global.week.avgPerDay),
     models: agg.models,
-    pricing: PRICING.map((price) => ({
+    pricing: pricing.map((price) => ({
       id: price.id,
       label: price.label,
       hit: price.hit,
       miss: price.miss,
       out: price.out,
     })),
+    pricingCustom: resolved.custom,
     ledger,
-    warnings: agg.warnings,
+    warnings: [
+      ...(resolved.invalid ? [{ code: 'pricing-invalid' }] : []),
+      ...agg.warnings,
+    ],
   };
 
   // Project is user-controlled, so avoid retaining one snapshot for every
@@ -757,8 +857,9 @@ export function apply(ctx) {
       const fresh = url.searchParams.get('fresh') === '1' || url.searchParams.get('fresh') === 'true';
       const days = normalizeDays(url.searchParams.get('days'));
       const project = url.searchParams.get('project');
+      const pricing = url.searchParams.get('pricing');
       try {
-        sendJson(res, 200, buildSnapshot({ days, fresh, project }));
+        sendJson(res, 200, buildSnapshot({ days, fresh, project, pricing }));
       } catch (error) {
         sendJson(res, 500, { ok: false, error: String((error && error.stack) || error) });
       }
@@ -778,8 +879,9 @@ export function apply(ctx) {
       const days = normalizeDays(url.searchParams.get('days'));
       const scope = url.searchParams.get('scope') === 'projects' ? 'projects' : 'days';
       const project = url.searchParams.get('project');
+      const pricing = url.searchParams.get('pricing');
       try {
-        const snapshot = buildSnapshot({ days, fresh: true, project });
+        const snapshot = buildSnapshot({ days, fresh: true, project, pricing });
         const body = Buffer.from(`\uFEFF${buildCsv(snapshot, scope)}`, 'utf8');
         res.writeHead(200, {
           'Content-Type': 'text/csv; charset=utf-8',

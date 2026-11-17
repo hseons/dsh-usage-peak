@@ -13,7 +13,11 @@ import {
   csvEscape,
   decodeSessionFile,
   emptyDay,
+  encodePricing,
   isPeakAt,
+  normalizePricing,
+  parsePricingParam,
+  resolvePricing,
   nextSwitch,
   normalizeDays,
   parseSessionMeta,
@@ -531,4 +535,108 @@ test('snapshot cache bounds arbitrary keys and evicts expired entries', (t) => {
   assert.strictEqual(buildSnapshot({ now: now + 1, days: 7, project: '/cache-64' }), current);
   buildSnapshot({ now: now + 15000, days: 7, project: '/new-after-expiry' });
   assert.notStrictEqual(buildSnapshot({ now: now + 15000, days: 7, project: '/cache-64' }), current);
+});
+
+test('assistant messages bill from the earliest stream chunk, falling back to record time', () => {
+  const line = (time, stream) => JSON.stringify({
+    type: 'assistant/message',
+    time,
+    data: {
+      usage: { inputTokens: 10, cacheReadTokens: 5, outputTokens: 2 },
+      message: { source: { model: 'deepseek-flash' } },
+      stream,
+    },
+  });
+  const text = [
+    line(900, [{ type: 'chunk', time: 300 }, { type: 'chunk', time: 100 }, { type: 'chunk', time: 200 }]),
+    line(500, undefined),
+    line(700, [{ type: 'chunk', time: 'bad' }, { type: 'chunk' }, { type: 'chunk', time: 650 }]),
+  ].join('\n');
+  assert.deepEqual(parseSessionTurns(text).map((turn) => turn.t), [100, 500, 650]);
+});
+
+const customPricing = [
+  { id: 'flash', hit: [0.01, 0.02], miss: [0.5, 1], out: [2, 4] },
+  { id: 'pro', hit: [0.1, 0.2], miss: [3, 6], out: [9, 18] },
+];
+
+test('custom pricing normalizes, encodes, and round-trips through the query parameter', () => {
+  const normalized = normalizePricing(customPricing);
+  assert.equal(normalized[0].label, 'DeepSeek Flash');
+  assert.equal(normalized[1].label, 'DeepSeek Pro');
+  const encoded = encodePricing(customPricing);
+  assert.equal(encoded, 'flash:0.01,0.02,0.5,1,2,4|pro:0.1,0.2,3,6,9,18');
+  assert.deepEqual(parsePricingParam(encoded), normalized);
+  assert.deepEqual(resolvePricing(encoded), { pricing: normalized, custom: true, invalid: false });
+  const fallback = resolvePricing(undefined);
+  assert.equal(fallback.custom, false);
+  assert.equal(fallback.invalid, false);
+  assert.deepEqual(fallback.pricing[0].hit, [0.02, 0.04]);
+  const invalid = resolvePricing('flash:oops');
+  assert.equal(invalid.custom, false);
+  assert.equal(invalid.invalid, true);
+  assert.deepEqual(invalid.pricing[0].hit, [0.02, 0.04]);
+  assert.equal(parsePricingParam('flash:' + '0,'.repeat(5)), null);
+  assert.equal(parsePricingParam('x'.repeat(513)), null);
+  for (const bad of [[], [customPricing[0]], [{ ...customPricing[0] }, { ...customPricing[0] }]]) {
+    assert.equal(normalizePricing(bad), null);
+  }
+  for (const bad of [-1, Infinity, NaN, '1', true, 1e8]) {
+    const table = normalizePricing(customPricing).map((price) => ({ ...price }));
+    table[0].hit = [bad, 0.02];
+    assert.equal(normalizePricing(table), null);
+  }
+});
+
+test('custom pricing recalculates peak cost and peak-at-valley savings', () => {
+  const peak = bj(2026, 11, 9, 10);
+  const valley = bj(2026, 11, 9, 13);
+  const turn = (t) => ({ t, model: 'deepseek-flash', input: 2e6, cache: 1e6, output: 1e6 });
+  const atPeak = aggregateTurns([turn(peak)], { now: peak, days: 7, pricing: customPricing });
+  assert.equal(atPeak.today.cost, 6.02);
+  assert.equal(atPeak.today.peakCost, 6.02);
+  assert.equal(atPeak.today.savingIfValley, 3.01);
+  const atValley = aggregateTurns([turn(valley)], { now: valley, days: 7, pricing: customPricing });
+  assert.equal(atValley.today.cost, 3.01);
+  assert.equal(atValley.today.savingIfValley, 0);
+  assert.equal(priceFor('deepseek-pro', normalizePricing(customPricing)).miss[1], 6);
+  const invalid = aggregateTurns([turn(peak)], { now: peak, days: 7, pricing: [{ id: 'broken' }] });
+  assert.equal(invalid.today.cost, 12.04);
+});
+
+test('snapshot applies custom pricing, isolates its cache key, and warns on invalid input', (t) => {
+  const { now } = snapshotFixture(t);
+  const encoded = encodePricing(customPricing);
+  const base = buildSnapshot({ now, days: 7, fresh: true });
+  const custom = buildSnapshot({ now, days: 7, pricing: encoded, fresh: true });
+  assert.equal(custom.pricingCustom, true);
+  assert.deepEqual(custom.pricing, normalizePricing(customPricing).map(({ id, label, hit, miss, out }) => ({ id, label, hit, miss, out })));
+  assert.ok(custom.today.cost < base.today.cost);
+  assert.strictEqual(buildSnapshot({ now: now + 1, days: 7, pricing: encoded }), custom);
+  const other = buildSnapshot({ now: now + 1, days: 7, pricing: encodePricing([
+    { id: 'flash', hit: [0.5, 1], miss: [2, 4], out: [8, 16] },
+    { id: 'pro', hit: [0.1, 0.2], miss: [3, 6], out: [9, 18] },
+  ]) });
+  assert.notStrictEqual(other, custom);
+  const invalid = buildSnapshot({ now, days: 7, pricing: 'not-a-price', fresh: true });
+  assert.equal(invalid.pricingCustom, false);
+  assert.equal(invalid.warnings[0].code, 'pricing-invalid');
+  assert.deepEqual(invalid.pricing, base.pricing);
+});
+
+test('HTTP pricing parameter drives custom figures and CSV values', async (t) => {
+  const { now } = snapshotFixture(t);
+  t.mock.method(Date, 'now', () => now);
+  const app = routeHarness();
+  const encoded = encodePricing(customPricing);
+  const res = await app.request('data', `/?days=7&fresh=1&pricing=${encodeURIComponent(encoded)}`);
+  assert.equal(res.statusCode, 200);
+  const payload = JSON.parse(res.body);
+  assert.equal(payload.pricingCustom, true);
+  assert.deepEqual(payload.pricing, normalizePricing(customPricing).map(({ id, label, hit, miss, out }) => ({ id, label, hit, miss, out })));
+  const csv = await app.request('export.csv', `/?days=7&scope=days&pricing=${encodeURIComponent(encoded)}`);
+  assert.ok(csv.body.toString('utf8').includes(buildCsv(payload, 'days')));
+  const invalid = await app.request('data', '/?days=7&fresh=1&pricing=nope');
+  assert.equal(JSON.parse(invalid.body).warnings[0].code, 'pricing-invalid');
+  app.cleanup();
 });
