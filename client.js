@@ -1804,10 +1804,10 @@ window.__ModuleLoader__.load({
             h(
               'a',
               {
-                href: (data && data.repo) || 'https://github.com/hhse/dsh-usage-peak',
+                href: (data && data.repo) || 'https://github.com/hseons/dsh-usage-peak',
                 target: '_blank',
                 rel: 'noopener noreferrer',
-                title: 'https://github.com/hhse/dsh-usage-peak',
+                title: 'https://github.com/hseons/dsh-usage-peak',
                 style: {
                   color: C.text2,
                   textDecoration: 'none',
@@ -1818,7 +1818,7 @@ window.__ModuleLoader__.load({
                 },
               },
               '⭐',
-              'github.com/hhse/dsh-usage-peak',
+              'github.com/hseons/dsh-usage-peak',
               h('span', { style: { color: C.peak, fontWeight: 600 } }, `· ${t('footer.star')}`),
             ),
             data && data.version

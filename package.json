@@ -1,6 +1,6 @@
 {
   "name": "dsh-usage-peak",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "type": "module",
   "description": "DeepSeek Harness 用量峰谷仪表盘：峰/谷时段（含节假日与调休）、按请求开始时刻计价、自定义价目表、今日花费与 tokens、项目下钻/模型统计、可配置预算预警、余额可撑天数、CSV 导出、7/14/30 天窗口、缓存命中、谷时更省，侧栏常驻胶囊 + 设置页详情。",
   "exports": {
@@ -57,11 +57,11 @@
   "author": "mumuhmumu",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hhse/dsh-usage-peak.git"
+    "url": "git+https://github.com/hseons/dsh-usage-peak.git"
   },
-  "homepage": "https://github.com/hhse/dsh-usage-peak#readme",
+  "homepage": "https://github.com/hseons/dsh-usage-peak#readme",
   "bugs": {
-    "url": "https://github.com/hhse/dsh-usage-peak/issues"
+    "url": "https://github.com/hseons/dsh-usage-peak/issues"
   },
   "publishConfig": {
     "access": "public"

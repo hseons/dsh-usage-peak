@@ -17,7 +17,7 @@ import zlib from 'node:zlib';
 import { CALENDAR_YEARS, OFF_DAYS, WORKDAYS, hasCalendar, yearOf } from './holidays.js';
 
 const NS = 'dsh-usage-peak';
-const REPO_URL = 'https://github.com/hhse/dsh-usage-peak';
+const REPO_URL = 'https://github.com/hseons/dsh-usage-peak';
 const VERSION = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version;
 const ROUTE_BASE = '/plugin/dsh-usage-peak';
 const SNAPSHOT_TTL_MS = 15_000;

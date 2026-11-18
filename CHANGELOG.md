@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.6.1
+
+- 仓库迁移到新账号 `hseons`：面板页脚、导出链接、`REPO_URL` 与 npm 包的 repository / homepage / bugs 全部改指 `https://github.com/hseons/dsh-usage-peak`，旧 `hhse` 地址已失效。
+
 ## 1.6.0
 
 - 图表新增自定义详情浮层：悬停或聚焦小时图 / 每日趋势，显示该时段的花费、请求、tokens、缓存命中率与峰谷；浮层按列居中并 clamp 在图表内，窄侧栏也不溢出，原生 title 双提示已移除。
