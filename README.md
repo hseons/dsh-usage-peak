@@ -15,7 +15,8 @@
 - **侧栏常驻胶囊**：`● 峰  ¥14.70 · 12.8M tok · 2:43 后转谷`，点一下打开完整面板。侧栏折叠时收成一个小圆点。默认可撑天数不足 7 天时胶囊转琥珀色，不足 3 天转红色；可在面板调整阈值。
 - **峰谷状态**：当前时段、距离下次切换的倒计时、当前时段单价（缓存命中 / 全价输入 / 输出）。
 - **今日概况**：花费、请求数、tokens、缓存命中率、峰时花费占比、**谷时更省**（把这些峰时用量挪到谷时能省下的钱）、余额、**余额可撑天数**（余额 ÷ 近 7 天日均花费）。
-- **今日 24 小时分布**：每小时花费柱状，峰时与谷时用不同颜色，当前小时高亮。
+- **今日 24 小时分布**：每小时花费柱状，峰时与谷时用不同颜色，当前小时高亮；悬停或聚焦柱子可看该小时的花费、请求、tokens 与缓存命中率，键盘 `←` `→` / `Home` / `End` 浏览、`Esc` 关闭。
+- **窄侧栏自适应**：侧栏变窄或窗口变小时，图表自动换行、24 根柱子收窄、每日趋势的日期标签按宽度变稀疏；价目表按模型分组、单价输入自动换行，过宽的表格可横向滚动，胶囊的 tokens 段优先省略而不挤掉倒计时。
 - **花费构成**：缓存命中 / 全价输入 / 输出 三段占比，直接看出钱花在哪。
 - **近 7 / 14 / 30 天趋势**：右上角切换窗口，按天堆叠柱状，缺数据的日期补零，列数恒定；可对照峰时占比判断"贵在哪天"。
 - **按项目与下钻**：按会话头里的工作目录（`cwd`）聚合，倒序列出每个项目的请求数、tokens、花费与占比条。点击项目可只看该项目的概况、24 小时、趋势和模型明细，通过顶部「全部项目」恢复。
@@ -102,6 +103,8 @@ A usage and cost dashboard for DeepSeek Harness. It reads the local session logs
 - China public holidays and makeup workdays: holidays are valley all day, makeup weekend workdays follow the weekday windows (2026–2027 calendars shipped; missing years fall back to Mon-Fri with a visible warning);
 - a footer with the GitHub repository link, the running version and the covered calendar years;
 - a details page (Settings → Usage dashboard) with KPIs (including balance runway), an hourly breakdown, cost composition, a 7/14/30-day trend switch, spend by project, a per-model table, CSV export and the price list;
+- hover or keyboard focus on the hourly/daily charts for that bucket's spend, requests, tokens and cache-hit rate (arrows/Home/End to browse, Esc to close), with a clamped tooltip that fits narrow panels;
+- narrow sidebars and small windows: charts wrap, the 24 hourly bars compress, day labels thin out, the custom price form stacks its fields and wide tables scroll horizontally;
 - a custom price parameter (`pricing=`) on `/data` and `/export.csv`; malformed values fall back to the defaults with a `pricing-invalid` warning;
 - project drilldown: select a project to filter KPIs, hourly/daily charts, models and both CSV exports; clear the filter to return to all projects;
 - configurable browser-local runway thresholds (warning 7 days / critical 3 days by default) and an optional daily budget (warning above 100%, critical at 120%); settings sync between the sidebar and dashboard;

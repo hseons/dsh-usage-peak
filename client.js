@@ -117,9 +117,14 @@ window.__ModuleLoader__.load({
         'export.projectsTitle': '导出项目数据 CSV',
 
         'chart.hours': '今日每小时花费',
-        'chart.hoursHint': '橙 峰时 · 绿 谷时',
+        'chart.hoursHint': '橙 峰时 · 绿 谷时 · 悬停或聚焦看详情',
         'chart.days': '每天花费',
-        'chart.daysHint': '橙 峰时 · 绿 谷时',
+        'chart.daysHint': '橙 峰时 · 绿 谷时 · 悬停或聚焦看详情',
+        'tip.cost': '花费',
+        'tip.calls': '请求',
+        'tip.tokens': 'tokens',
+        'tip.hit': '缓存命中',
+        'tip.hint': '用 ← → 浏览每小时 / 每天，Esc 关闭',
 
         'cost.title': '今日花费构成',
         'cost.cache': '缓存命中',
@@ -133,7 +138,6 @@ window.__ModuleLoader__.load({
         'price.hit': '命中',
         'price.miss': '未命中',
         'price.out': '输出',
-        'price.current': '当前',
         'price.custom': '自定义价目',
         'pricing.title': '自定义价目表',
         'pricing.hint': '仅保存在本机；保存后所有金额与 CSV 立即按新价目重算。',
@@ -244,9 +248,14 @@ window.__ModuleLoader__.load({
         'export.projectsTitle': 'Export project CSV',
 
         'chart.hours': 'Cost per hour today',
-        'chart.hoursHint': 'orange peak · green valley',
+        'chart.hoursHint': 'orange peak · green valley · hover or focus for details',
         'chart.days': 'Spend by day',
-        'chart.daysHint': 'orange peak · green valley',
+        'chart.daysHint': 'orange peak · green valley · hover or focus for details',
+        'tip.cost': 'Spend',
+        'tip.calls': 'Requests',
+        'tip.tokens': 'tokens',
+        'tip.hit': 'Cache hit',
+        'tip.hint': 'Use ← → to browse hours or days, Esc to close',
 
         'cost.title': 'Today by token type',
         'cost.cache': 'Cache hits',
@@ -260,7 +269,6 @@ window.__ModuleLoader__.load({
         'price.hit': 'Hit',
         'price.miss': 'Miss',
         'price.out': 'Output',
-        'price.current': 'now',
         'price.custom': 'custom pricing',
         'pricing.title': 'Custom price list',
         'pricing.hint': 'Stored only in this browser; saving recalculates every figure and CSV immediately.',
@@ -516,6 +524,12 @@ window.__ModuleLoader__.load({
       return alertActive ? `⚠ ${switchText}` : switchText;
     }
 
+    /** Clamp a tooltip's left edge so it stays inside its chart box. */
+    function tipAnchor(center, tipWidth, boxWidth, inset = 4) {
+      const limit = Math.max(inset, boxWidth - tipWidth - inset);
+      return Math.min(Math.max(center - tipWidth / 2, inset), limit);
+    }
+
     // Generation guard rejects old filter responses and older same-filter reloads.
     function requestGate() {
       let key = null;
@@ -685,7 +699,17 @@ window.__ModuleLoader__.load({
             h(Sep),
             h(
               'span',
-              { style: { color: C.text2, flex: 'none', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' } },
+              {
+                style: {
+                  color: C.text2,
+                  flex: '0 1 auto',
+                  minWidth: 0,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  fontVariantNumeric: 'tabular-nums',
+                  whiteSpace: 'nowrap',
+                },
+              },
               data && data.today ? shortTokens(data.today.tokens) : '—',
               h('span', { style: { color: C.text3, marginLeft: 2 } }, 'tok'),
             ),
@@ -779,81 +803,317 @@ window.__ModuleLoader__.load({
       );
     }
 
-    function HourChart(props) {
-      const hours = props.hours || [];
-      const max = Math.max(0.0001, ...hours.map((entry) => entry.cost));
+    /* ------------------------------- chart tips ------------------------------ */
+
+    const srOnly = {
+      position: 'absolute',
+      width: 1,
+      height: 1,
+      margin: -1,
+      padding: 0,
+      overflow: 'hidden',
+      clip: 'rect(0 0 0 0)',
+      whiteSpace: 'nowrap',
+      border: 0,
+    };
+
+    /** Live width of an element, so dense charts can thin their labels. */
+    function useBoxWidth(ref) {
+      const [width, setWidth] = useState(0);
+      useEffect(() => {
+        const node = ref.current;
+        if (!node) return undefined;
+        const update = () => setWidth(node.clientWidth);
+        update();
+        if (typeof ResizeObserver === 'undefined') return undefined;
+        const observer = new ResizeObserver(update);
+        observer.observe(node);
+        return () => observer.disconnect();
+      }, []);
+      return width;
+    }
+
+    /**
+     * Hover plus keyboard state for one chart.
+     *
+     * The tooltip is anchored to the hovered column's centre and clamped to the
+     * chart box, so it never spills out of a narrow panel.
+     */
+    function useChartTip(count) {
+      const [active, setActive] = useState(-1);
+      const [focused, setFocused] = useState(false);
+      const [anchor, setAnchor] = useState(null);
+      const boxRef = useRef(null);
+      const columns = useRef([]);
+      const width = useBoxWidth(boxRef);
+      const tipWidth = Math.min(216, Math.max(150, (width || 240) - 8));
+
+      useEffect(() => {
+        const column = active >= 0 ? columns.current[active] : null;
+        if (!column || !width) {
+          setAnchor(null);
+          return;
+        }
+        setAnchor({ left: tipAnchor(column.offsetLeft + column.offsetWidth / 2, tipWidth, width), width: tipWidth });
+      }, [active, width, tipWidth]);
+
+      const step = (delta) =>
+        setActive((current) => {
+          const from = current < 0 ? (delta > 0 ? -1 : 0) : current;
+          return (from + delta + count) % count;
+        });
+
+      const onKeyDown = (event) => {
+        if (!count) return;
+        if (event.key === 'ArrowRight') {
+          event.preventDefault();
+          step(1);
+        } else if (event.key === 'ArrowLeft') {
+          event.preventDefault();
+          step(-1);
+        } else if (event.key === 'Home') {
+          event.preventDefault();
+          setActive(0);
+        } else if (event.key === 'End') {
+          event.preventDefault();
+          setActive(count - 1);
+        } else if (event.key === 'Escape') {
+          setActive(-1);
+        }
+      };
+
+      const onBlur = (event) => {
+        if (event.currentTarget.contains(event.relatedTarget)) return;
+        setFocused(false);
+        setActive(-1);
+      };
+
+      return {
+        active,
+        anchor,
+        boxRef,
+        columns,
+        width,
+        focused,
+        tipWidth,
+        onKeyDown,
+        onBlur,
+        onFocus: () => setFocused(true),
+        show: setActive,
+        clear: () => setActive(-1),
+      };
+    }
+
+    function ChartTip(props) {
       return h(
         'div',
-        { style: { display: 'flex', alignItems: 'flex-end', gap: 3, height: 108, marginTop: 2 } },
-        hours.map((entry) =>
+        {
+          role: 'tooltip',
+          style: {
+            position: 'absolute',
+            top: 0,
+            left: props.left,
+            width: props.width,
+            zIndex: 3,
+            pointerEvents: 'none',
+            boxSizing: 'border-box',
+            padding: '6px 9px',
+            borderRadius: 8,
+            border: `1px solid ${C.border}`,
+            background: C.layer1,
+            boxShadow: '0 8px 24px rgba(0, 0, 0, 0.22)',
+            fontSize: 10.5,
+            lineHeight: '15px',
+            color: C.text2,
+          },
+        },
+        h(
+          'div',
+          {
+            style: {
+              color: C.text,
+              fontWeight: 600,
+              marginBottom: 3,
+              fontVariantNumeric: 'tabular-nums',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            },
+          },
+          props.title,
+        ),
+        (props.rows || []).map((row, index) =>
           h(
             'div',
-            {
-              key: entry.hour,
-              title: `${String(entry.hour).padStart(2, '0')}:00 · ${yuan(entry.cost)} · ${entry.calls} ${props.t('unit.calls')}`,
-              style: {
-                flex: 1,
-                display: 'flex',
-                flexDirection: 'column',
-                justifyContent: 'flex-end',
-                height: '100%',
-                minWidth: 5,
-                borderRadius: 4,
-                outline: entry.hour === props.nowHour ? `1px solid ${C.border}` : 'none',
-                outlineOffset: 1,
-              },
-            },
-            h('div', {
-              style: {
-                height: `${Math.max(entry.cost > 0 ? 3 : 0, (entry.cost / max) * 100)}%`,
-                background: entry.peak ? C.peak : C.valley,
-                opacity: entry.cost > 0 ? 0.9 : 0,
-                borderRadius: 3,
-              },
-            }),
+            { key: index, style: { display: 'flex', justifyContent: 'space-between', gap: 12 } },
+            h('span', { style: { color: C.text3, flex: 'none' } }, row[0]),
+            h('span', { style: { color: C.text, fontVariantNumeric: 'tabular-nums', textAlign: 'right' } }, row[1]),
           ),
         ),
       );
     }
 
-    function DayChart(props) {
-      const days = props.days || [];
-      const max = Math.max(0.0001, ...days.map((entry) => entry.cost));
+    function HourChart(props) {
+      const hours = props.hours || [];
+      const t = props.t;
+      const max = Math.max(0.0001, ...hours.map((entry) => entry.cost));
+      const tip = useChartTip(hours.length);
+      const active = tip.active >= 0 ? hours[tip.active] : null;
+      const label = active ? `${String(active.hour).padStart(2, '0')}:00 · ${active.peak ? t('status.peak') : t('status.valley')}` : '';
+      const rows = active
+        ? [
+            [t('tip.cost'), yuan(active.cost)],
+            [t('tip.calls'), `${active.calls} ${t('unit.calls')}`],
+            [t('tip.tokens'), tokens(active.tokens || 0, t)],
+            [t('tip.hit'), percent(active.hitRate || 0)],
+          ]
+        : [];
       return h(
         'div',
-        { style: { display: 'flex', alignItems: 'flex-end', gap: 8, height: 128, marginTop: 4 } },
-        days.map((entry) =>
-          h(
-            'div',
-            {
-              key: entry.day,
-              style: { flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, height: '100%' },
-            },
-            h(
-              'span',
-              { style: { fontSize: 9.5, color: C.text3, fontVariantNumeric: 'tabular-nums' } },
-              entry.cost > 0 ? entry.cost.toFixed(1) : '',
-            ),
+        {
+          role: 'group',
+          tabIndex: 0,
+          'aria-label': t('chart.hours'),
+          title: t('tip.hint'),
+          onKeyDown: tip.onKeyDown,
+          onFocus: tip.onFocus,
+          onBlur: tip.onBlur,
+          style: {
+            position: 'relative',
+            marginTop: 2,
+            borderRadius: 6,
+            outline: tip.focused ? `2px solid ${C.out}` : 'none',
+            outlineOffset: 2,
+          },
+        },
+        h(
+          'div',
+          {
+            ref: tip.boxRef,
+            onMouseLeave: tip.clear,
+            style: { display: 'flex', alignItems: 'flex-end', gap: 3, height: 108 },
+          },
+          hours.map((entry, index) =>
             h(
               'div',
               {
-                title: `${entry.day}${entry.holiday ? ` · ${entry.holiday}` : ''} · ${yuan(entry.cost)} · ${entry.calls} ${props.t('unit.calls')}`,
+                key: entry.hour,
+                ref: (node) => {
+                  tip.columns.current[index] = node;
+                },
+                onMouseEnter: () => tip.show(index),
                 style: {
                   flex: 1,
-                  width: '100%',
                   display: 'flex',
                   flexDirection: 'column',
                   justifyContent: 'flex-end',
+                  height: '100%',
+                  minWidth: 3,
                   borderRadius: 4,
-                  overflow: 'hidden',
+                  outline: entry.hour === props.nowHour ? `1px solid ${C.border}` : 'none',
+                  outlineOffset: 1,
                 },
               },
-              h('div', { style: { height: `${(entry.peakCost / max) * 100}%`, background: C.peak, opacity: 0.9 } }),
-              h('div', { style: { height: `${(entry.valleyCost / max) * 100}%`, background: C.valley, opacity: 0.9 } }),
+              h('div', {
+                style: {
+                  height: `${Math.max(entry.cost > 0 ? 3 : 0, (entry.cost / max) * 100)}%`,
+                  background: entry.peak ? C.peak : C.valley,
+                  opacity: entry.cost > 0 ? (tip.active < 0 || tip.active === index ? 0.9 : 0.4) : 0,
+                  borderRadius: 3,
+                  transition: 'opacity 120ms',
+                },
+              }),
             ),
-            h('span', { style: { fontSize: 9.5, color: C.text2 } }, entry.day.slice(5)),
           ),
         ),
+        tip.anchor ? h(ChartTip, { title: label, rows, left: tip.anchor.left, width: tip.anchor.width }) : null,
+        active ? h('span', { 'aria-live': 'polite', style: srOnly }, `${label} · ${rows.map((row) => `${row[0]} ${row[1]}`).join(' · ')}`) : null,
+      );
+    }
+
+    function DayChart(props) {
+      const days = props.days || [];
+      const t = props.t;
+      const max = Math.max(0.0001, ...days.map((entry) => entry.cost));
+      const tip = useChartTip(days.length);
+      const dense = tip.width > 0 && days.length > 0 && tip.width / days.length < 26;
+      const gap = dense ? 2 : 8;
+      const labelStride = dense ? Math.max(1, Math.ceil(days.length / 7)) : 1;
+      const active = tip.active >= 0 ? days[tip.active] : null;
+      const label = active ? `${active.day}${active.holiday ? ` · ${active.holiday}` : ''}` : '';
+      const rows = active
+        ? [
+            [t('tip.cost'), yuan(active.cost)],
+            [t('tip.calls'), `${active.calls} ${t('unit.calls')}`],
+            [t('tip.tokens'), tokens(active.tokens || 0, t)],
+            [t('tip.hit'), percent(active.hitRate || 0)],
+          ]
+        : [];
+      return h(
+        'div',
+        {
+          role: 'group',
+          tabIndex: 0,
+          'aria-label': t('chart.days'),
+          title: t('tip.hint'),
+          onKeyDown: tip.onKeyDown,
+          onFocus: tip.onFocus,
+          onBlur: tip.onBlur,
+          style: {
+            position: 'relative',
+            marginTop: 4,
+            borderRadius: 6,
+            outline: tip.focused ? `2px solid ${C.out}` : 'none',
+            outlineOffset: 2,
+          },
+        },
+        h(
+          'div',
+          {
+            ref: tip.boxRef,
+            onMouseLeave: tip.clear,
+            style: { display: 'flex', alignItems: 'flex-end', gap, height: 128 },
+          },
+          days.map((entry, index) =>
+            h(
+              'div',
+              {
+                key: entry.day,
+                ref: (node) => {
+                  tip.columns.current[index] = node;
+                },
+                onMouseEnter: () => tip.show(index),
+                style: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, height: '100%' },
+              },
+              dense
+                ? null
+                : h('span', { style: { fontSize: 9.5, color: C.text3, fontVariantNumeric: 'tabular-nums' } }, entry.cost > 0 ? entry.cost.toFixed(1) : ''),
+              h(
+                'div',
+                {
+                  style: {
+                    flex: 1,
+                    width: '100%',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    justifyContent: 'flex-end',
+                    borderRadius: 4,
+                    overflow: 'hidden',
+                    opacity: tip.active < 0 || tip.active === index ? 1 : 0.45,
+                    transition: 'opacity 120ms',
+                  },
+                },
+                h('div', { style: { height: `${(entry.peakCost / max) * 100}%`, background: C.peak, opacity: 0.9 } }),
+                h('div', { style: { height: `${(entry.valleyCost / max) * 100}%`, background: C.valley, opacity: 0.9 } }),
+              ),
+              index % labelStride === 0
+                ? h('span', { style: { fontSize: dense ? 9 : 9.5, color: C.text2, whiteSpace: 'nowrap' } }, dense ? entry.day.slice(8) : entry.day.slice(5))
+                : h('span', { style: { height: dense ? 11 : 12 } }),
+            ),
+          ),
+        ),
+        tip.anchor ? h(ChartTip, { title: label, rows, left: tip.anchor.left, width: tip.anchor.width }) : null,
+        active ? h('span', { 'aria-live': 'polite', style: srOnly }, `${label} · ${rows.map((row) => `${row[0]} ${row[1]}`).join(' · ')}`) : null,
       );
     }
 
@@ -906,9 +1166,8 @@ window.__ModuleLoader__.load({
               h('td', { style: { padding: '4px 8px', color: C.text } }, offset === 0 ? model.label : ''),
               h(
                 'td',
-                { style: { padding: '4px 8px', color: C.text2 } },
+                { style: { padding: '4px 8px', color: C.text2, fontWeight: current ? 600 : 400 } },
                 isPeak ? t('status.peak') : t('status.valley'),
-                current ? ` · ${t('price.current')}` : '',
               ),
               h('td', { style: { padding: '4px 8px', textAlign: 'right', color: C.text } }, model.hit[offset]),
               h('td', { style: { padding: '4px 8px', textAlign: 'right', color: C.text } }, model.miss[offset]),
@@ -918,33 +1177,38 @@ window.__ModuleLoader__.load({
         }
       }
       return h(
-        'table',
-        { style: { width: '100%', borderCollapse: 'collapse', fontSize: 11.5 } },
+        'div',
+        { style: { overflowX: 'auto', margin: '0 -2px' } },
         h(
-          'thead',
-          null,
+          'table',
+          { style: { width: '100%', borderCollapse: 'collapse', fontSize: 11.5 } },
           h(
-            'tr',
+            'thead',
             null,
-            head.map((label, index) =>
-              h(
-                'th',
-                {
-                  key: label,
-                  style: {
-                    padding: '3px 8px',
-                    textAlign: index >= 2 ? 'right' : 'left',
-                    fontWeight: 500,
-                    color: C.text3,
-                    borderBottom: `1px solid ${C.border}`,
+            h(
+              'tr',
+              null,
+              head.map((label, index) =>
+                h(
+                  'th',
+                  {
+                    key: label,
+                    style: {
+                      padding: '3px 8px',
+                      textAlign: index >= 2 ? 'right' : 'left',
+                      fontWeight: 500,
+                      color: C.text3,
+                      whiteSpace: 'nowrap',
+                      borderBottom: `1px solid ${C.border}`,
+                    },
                   },
-                },
-                label,
+                  label,
+                ),
               ),
             ),
           ),
+          h('tbody', null, rows),
         ),
-        h('tbody', null, rows),
       );
     }
 
@@ -1030,30 +1294,34 @@ window.__ModuleLoader__.load({
       }
       const head = [t('price.model'), t('projects.calls'), t('projects.tokens'), t('projects.cost')];
       return h(
-        'table',
-        { style: { width: '100%', borderCollapse: 'collapse', fontSize: 11.5 } },
+        'div',
+        { style: { overflowX: 'auto', margin: '0 -2px' } },
         h(
-          'thead',
-          null,
+          'table',
+          { style: { width: '100%', borderCollapse: 'collapse', fontSize: 11.5 } },
           h(
-            'tr',
+            'thead',
             null,
-            head.map((label, index) =>
-              h('th', { key: label, style: cellHead(index === 0 ? 'left' : 'right') }, label),
-            ),
-          ),
-        ),
-        h(
-          'tbody',
-          null,
-          rows.map((model) =>
             h(
               'tr',
-              { key: model.id },
-              h('td', { style: { ...cellBody, color: C.text } }, model.label),
-              h('td', { style: { ...cellBody, textAlign: 'right' } }, model.calls),
-              h('td', { style: { ...cellBody, textAlign: 'right' } }, tokens(model.tokens, t)),
-              h('td', { style: { ...cellBody, textAlign: 'right' } }, yuan(model.cost)),
+              null,
+              head.map((label, index) =>
+                h('th', { key: label, style: cellHead(index === 0 ? 'left' : 'right') }, label),
+              ),
+            ),
+          ),
+          h(
+            'tbody',
+            null,
+            rows.map((model) =>
+              h(
+                'tr',
+                { key: model.id },
+                h('td', { style: { ...cellBody, color: C.text } }, model.label),
+                h('td', { style: { ...cellBody, textAlign: 'right' } }, model.calls),
+                h('td', { style: { ...cellBody, textAlign: 'right' } }, tokens(model.tokens, t)),
+                h('td', { style: { ...cellBody, textAlign: 'right' } }, yuan(model.cost)),
+              ),
             ),
           ),
         ),
@@ -1096,21 +1364,39 @@ window.__ModuleLoader__.load({
           setDraft((previous) => previous.map((entry, index) => (index === modelIndex ? { ...entry, [field]: entry[field].map((value, i) => (i === offset ? raw : value)) } : entry)));
           setMessage('');
         },
-        style: { width: 62, padding: '4px 5px', borderRadius: 5, border: `1px solid ${C.border}`, color: C.text, background: C.layer2, fontVariantNumeric: 'tabular-nums' },
+        style: { width: '100%', minWidth: 0, padding: '4px 5px', borderRadius: 5, border: `1px solid ${C.border}`, color: C.text, background: C.layer2, fontVariantNumeric: 'tabular-nums', boxSizing: 'border-box' },
       });
-      const gridStyle = { display: 'grid', gridTemplateColumns: 'minmax(110px, 1.2fr) repeat(3, minmax(120px, 1fr))', gap: 8, alignItems: 'center' };
-      const header = h('div', { style: { ...gridStyle, fontSize: 10.5, color: C.text3 } },
-        h('span', { key: 'model' }, t('price.model')),
-        fields.map(([field, key]) => h('span', { key: field }, `${t(key)} (${t('pricing.valley')} / ${t('pricing.peak')})`)));
-      const rows = draft.map((model, modelIndex) => h('div', { key: model.id, style: gridStyle },
-        h('span', { key: 'label', style: { fontSize: 11.5, color: C.text } }, model.label),
-        fields.map(([field, key]) => h('span', { key: field, style: { display: 'flex', alignItems: 'center', gap: 3 } },
+      const fieldGrid = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(146px, 1fr))', gap: 8 };
+      const fieldRow = (model, modelIndex, field, key) => h(
+        'label',
+        { key: field, style: { display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 } },
+        h('span', { style: { fontSize: 10.5, color: C.text3 } }, `${t(key)} · ${t('pricing.valley')}/${t('pricing.peak')}`),
+        h(
+          'span',
+          { style: { display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 } },
           priceInput(model, modelIndex, field, 0),
-          h('span', { key: 'sep', style: { color: C.text3, fontSize: 10 } }, '/'),
-          priceInput(model, modelIndex, field, 1)))));
+          h('span', { key: 'sep', style: { color: C.text3, fontSize: 10, flex: 'none' } }, '/'),
+          priceInput(model, modelIndex, field, 1),
+        ),
+      );
+      const rows = draft.map((model, modelIndex) => h(
+        'div',
+        {
+          key: model.id,
+          style: {
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 6,
+            paddingBottom: 8,
+            borderBottom: modelIndex === draft.length - 1 ? 'none' : `1px solid ${C.border}`,
+          },
+        },
+        h('span', { key: 'label', style: { fontSize: 11.5, color: C.text, fontWeight: 600 } }, model.label),
+        h('div', { key: 'fields', style: fieldGrid }, fields.map(([field, key]) => fieldRow(model, modelIndex, field, key))),
+      ));
       return h(Card, null,
         h(CardTitle, { title: t('pricing.title'), hint: t('pricing.hint') }),
-        h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } }, header, rows),
+        h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } }, rows),
         h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
           h('button', {
             type: 'button',
@@ -1269,7 +1555,7 @@ window.__ModuleLoader__.load({
         body.push(
           h(
             'div',
-            { key: 'kpi', style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 } },
+            { key: 'kpi', style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 140px), 1fr))', gap: 10 } },
             h(Kpi, {
               label: t('kpi.runway'),
               value: wallet && wallet.runwayDays !== null ? runway(wallet.runwayDays, t) : '—',
@@ -1308,10 +1594,10 @@ window.__ModuleLoader__.load({
         body.push(
           h(
             'div',
-            { key: 'charts', style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1.5fr) minmax(0, 1fr)', gap: 10 } },
+            { key: 'charts', style: { display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'stretch' } },
             h(
               Card,
-              null,
+              { style: { flex: '1.5 1 340px', minWidth: 0 } },
               h(CardTitle, { title: t('chart.hours'), hint: t('chart.hoursHint') }),
               h(HourChart, { hours: data.hours, nowHour: data.now.hour, t }),
               h(
@@ -1322,7 +1608,7 @@ window.__ModuleLoader__.load({
             ),
             h(
               Card,
-              null,
+              { style: { flex: '1 1 220px', minWidth: 0 } },
               h(CardTitle, { title: t('cost.title') }),
               h(CostSplit, {
                 t,

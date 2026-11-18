@@ -242,6 +242,23 @@ test('emptyDay starts with 24 empty hour buckets', () => {
   assert.equal(day.lastAt, 0);
 });
 
+test('hour buckets carry tokens and the cache hit rate', () => {
+  const now = bj(2026, 11, 10, 10);
+  const agg = aggregateTurns(
+    [
+      { t: now, model: 'deepseek-flash', input: 1e6, cache: 3e6, output: 0.5e6 },
+      { t: now + 30 * 60_000, model: 'deepseek-flash', input: 1e6, cache: 0, output: 0.5e6 },
+    ],
+    { now, days: 7 },
+  );
+  const hour = agg.hours[10];
+  assert.equal(hour.calls, 2);
+  assert.equal(hour.tokens, 6e6);
+  assert.equal(hour.hitRate, 0.6);
+  assert.equal(agg.hours[11].tokens, 0);
+  assert.equal(agg.hours[11].hitRate, 0);
+});
+
 test('window edges stay stable across a day boundary', () => {
   const now = bj(2026, 11, 10, 0, 0) + 1; // one ms past midnight
   const agg = aggregateTurns([], { now, days: 7 });

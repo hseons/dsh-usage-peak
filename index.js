@@ -342,7 +342,8 @@ export function collectTurns() {
 
 export function emptyDay(day) {
   const hours = [];
-  for (let hour = 0; hour < 24; hour += 1) hours.push({ hour, cost: 0, calls: 0 });
+  for (let hour = 0; hour < 24; hour += 1)
+    hours.push({ hour, cost: 0, calls: 0, inputTokens: 0, cacheTokens: 0, outputTokens: 0 });
   return {
     day,
     calls: 0,
@@ -395,6 +396,9 @@ export function addTurn(day, turn, pricing = PRICING) {
   const bucket = day.hours[hour];
   bucket.cost += cost;
   bucket.calls += 1;
+  bucket.inputTokens += turn.input;
+  bucket.cacheTokens += turn.cache;
+  bucket.outputTokens += turn.output;
 
   const modelKey = price.id;
   const slot = day.models[modelKey] || (day.models[modelKey] = { calls: 0, cost: 0, tokens: 0 });
@@ -459,12 +463,17 @@ export function round(value) {
 
 export function hoursOf(day) {
   const midnight = Date.parse(`${day.day}T00:00:00Z`) - BJ_OFFSET;
-  return day.hours.map((bucket) => ({
-    hour: bucket.hour,
-    cost: round(bucket.cost),
-    calls: bucket.calls,
-    peak: isPeakAt(midnight + bucket.hour * 3600_000),
-  }));
+  return day.hours.map((bucket) => {
+    const billable = bucket.inputTokens + bucket.cacheTokens;
+    return {
+      hour: bucket.hour,
+      cost: round(bucket.cost),
+      calls: bucket.calls,
+      peak: isPeakAt(midnight + bucket.hour * 3600_000),
+      tokens: bucket.inputTokens + bucket.cacheTokens + bucket.outputTokens,
+      hitRate: billable > 0 ? bucket.cacheTokens / billable : 0,
+    };
+  });
 }
 
 /** Calendar years touched by the window that have no holiday data yet. */

@@ -10,7 +10,7 @@ function helpers(storage = {}) {
   const context = { window: { localStorage: storage, dispatchEvent: (event) => events.push(event) }, CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } }, C: { error: 'red', peak: 'amber', text3: 'gray' }, DATA_URL: '/data', DEFAULT_DAYS: 14 };
   const start = source.indexOf("    const PREFS_KEY =");
   const stop = source.indexOf('    function useFeed(', start);
-  vm.runInNewContext(source.slice(start, stop) + '\nthis.api = { validatePrefs, readPrefs, savePrefs, alertState, feedUrl, requestGate, tint, pillStatus, validatePricing, readPricing, savePricing, encodePricing, pricingParam, clonePricing, DEFAULT_PRICING };', context);
+  vm.runInNewContext(source.slice(start, stop) + '\nthis.api = { validatePrefs, readPrefs, savePrefs, alertState, feedUrl, requestGate, tint, pillStatus, tipAnchor, validatePricing, readPricing, savePricing, encodePricing, pricingParam, clonePricing, DEFAULT_PRICING };', context);
   return { ...context.api, events };
 }
 const plain = (value) => JSON.parse(JSON.stringify(value));
@@ -78,6 +78,15 @@ test('client alert prefix keeps the peak/valley countdown visible', () => {
   const api = helpers();
   assert.equal(api.pillStatus(true, '2:43 后转谷'), '⚠ 2:43 后转谷');
   assert.equal(api.pillStatus(false, '2:43 后转谷'), '2:43 后转谷');
+});
+
+test('client tooltip anchor stays inside the chart box', () => {
+  const api = helpers();
+  assert.equal(api.tipAnchor(100, 200, 400), 4);
+  assert.equal(api.tipAnchor(300, 200, 400), 196);
+  assert.equal(api.tipAnchor(20, 200, 400), 4);
+  assert.equal(api.tipAnchor(399, 200, 400), 196);
+  assert.equal(api.tipAnchor(50, 120, 100), 4);
 });
 
 test('client request generation guard rejects old filters, refreshes, and unmount results', () => {
