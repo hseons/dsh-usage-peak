@@ -1,9 +1,9 @@
 # 提交到 awesome-dsh-plugin（DSH 插件市场的目录来源）用的条目文件。
-# 用法：把 hhse/dsh-usage-peak 换成你的 GitHub 仓库，然后以
-#   data/plugins/hhse__dsh-usage-peak.yml
+# 用法：把 hseons/dsh-usage-peak 换成你的 GitHub 仓库，然后以
+#   data/plugins/hseons__dsh-usage-peak.yml
 # 的路径提交到 https://github.com/awesome-dsh-plugin/awesome-dsh-plugin 的 PR。
-url: https://github.com/hhse/dsh-usage-peak
-name: hhse/dsh-usage-peak
+url: https://github.com/hseons/dsh-usage-peak
+name: hseons/dsh-usage-peak
 category: usage
 description:
   en: 'Peak/valley pricing and spend dashboard for DeepSeek Harness: sidebar pill, project drilldown, request-start peak/valley billing, an editable price list, configurable budget alerts, project/model breakdown, balance runway, CSV export, 7/14/30-day windows, holiday-aware pricing, valley-saving estimate and cost composition.'
