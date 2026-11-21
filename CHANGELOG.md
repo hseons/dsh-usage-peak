@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.6.2
+
+- README 顶部加一行市场收录说明：已收录进 awesome-dsh-plugin（PR #17264），并直接指向目录仓库与合并记录。
+
 ## 1.6.1
 
 - 仓库迁移到新账号 `hseons`：面板页脚、导出链接、`REPO_URL` 与 npm 包的 repository / homepage / bugs 全部改指 `https://github.com/hseons/dsh-usage-peak`，旧 `hhse` 地址已失效。
