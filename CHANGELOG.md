@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.6.3
+
+- README 的市场说明从「已收录（PR #17264）」改为「已上架」：直接链接市场页 `https://awesome-dsh-plugin.com/p/hseons/dsh-usage-peak/`，标注分类 Usage & Billing 与合并 commit `439c03d`；安装一节补市场页入口。
+
 ## 1.6.2
 
 - README 顶部加一行市场收录说明：已收录进 awesome-dsh-plugin（PR #17264），并直接指向目录仓库与合并记录。

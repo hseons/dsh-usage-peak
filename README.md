@@ -1,6 +1,6 @@
 # 用量峰谷仪表盘（DSH Usage Dashboard）
 
-> ✅ 已收录进 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) 插件市场（[PR #17264](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/17264)）
+> ✅ 已上架 [awesome-dsh-plugin 插件市场](https://awesome-dsh-plugin.com/p/hseons/dsh-usage-peak/)（分类 Usage & Billing；收录 PR [#17264](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/17264) 已合并，merge commit `439c03d`）
 
 给 DeepSeek Harness 用的用量/花费仪表盘：一眼看清现在是不是**峰时**、今天花了多少钱、烧了多少 tokens、钱花在哪个项目，以及余额还能撑几天。支持按请求开始时刻判断峰谷，并可在面板里改价目表。
 
@@ -67,7 +67,7 @@
 dsh plugin add dsh-usage-peak
 ```
 
-也可以在 DSH 插件市场搜索 `dsh-usage-peak` 安装。
+也可以在 DSH 插件市场搜索 `dsh-usage-peak` 安装，或直接打开[市场页](https://awesome-dsh-plugin.com/p/hseons/dsh-usage-peak/)。
 
 装好后：
 
