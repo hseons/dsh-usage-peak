@@ -537,9 +537,20 @@ export function aggregateTurns(turns, options = {}) {
   // Keys are opaque identities: do not trim, prefix-match, or URL-decode here.
   // URLSearchParams already performs the single required HTTP decoding pass.
   const projectKey = typeof options.project === 'string' && options.project !== '' ? options.project : null;
+  // Share always reads against the whole window, even while drilling into one
+  // project, so the table never shows a meaningless 100% for the selected row.
+  const shareBase =
+    typeof options.shareBase === 'number' && Number.isFinite(options.shareBase) && options.shareBase > 0
+      ? options.shareBase
+      : null;
   if (projectKey !== null) {
     const global = aggregateTurns(turns, { now, days, pricing });
-    const filtered = aggregateTurns((turns || []).filter((turn) => turn?.project?.key === projectKey), { now, days, pricing });
+    const filtered = aggregateTurns((turns || []).filter((turn) => turn?.project?.key === projectKey), {
+      now,
+      days,
+      pricing,
+      shareBase: global.attributedCost,
+    });
     const known = global.projects.find((project) => project.key === projectKey);
     const selectedProject = known
       ? { key: known.key, name: known.name, path: known.path }
@@ -625,12 +636,13 @@ export function aggregateTurns(turns, options = {}) {
     return { id: price.id, label: price.label, calls, cost: round(cost), tokens };
   });
 
+  const shareTotal = shareBase !== null ? shareBase : attributedCost;
   const projects = [...byProject.values()]
     .map((project) => ({
       ...project,
       cost: round(project.cost),
       peakCost: round(project.peakCost),
-      share: round(attributedCost > 0 ? project.cost / attributedCost : 0),
+      share: round(shareTotal > 0 ? project.cost / shareTotal : 0),
     }))
     .sort((a, b) => b.cost - a.cost || a.name.localeCompare(b.name));
 
@@ -640,6 +652,7 @@ export function aggregateTurns(turns, options = {}) {
     hours: today ? today.hours : [],
     window,
     projects,
+    attributedCost: round(attributedCost),
     selectedProject: null,
     projectOptions: projects,
     week: {
@@ -681,7 +694,14 @@ export function buildSnapshot(options = {}) {
   const selectedProject = project === null ? null : selected
     ? { key: selected.key, name: selected.name, path: selected.path }
     : { key: project, name: path.basename(project) || project, path: project };
-  const agg = project === null ? global : aggregateTurns(turns.filter((turn) => turn.project?.key === project), { now, days, pricing });
+  const agg = project === null
+    ? global
+    : aggregateTurns(turns.filter((turn) => turn.project?.key === project), {
+        now,
+        days,
+        pricing,
+        shareBase: global.attributedCost,
+      });
   const ledger = readLedger();
   // Ledger values are account-level, not attributable to an individual project.
   if (ledger.ok && project === null) {

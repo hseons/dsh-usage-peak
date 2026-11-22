@@ -430,7 +430,11 @@ test('project drilldown uses exact opaque keys and preserves the full project di
   assert.deepEqual(alpha.models.map((m) => m.calls), [1, 0]);
   assert.deepEqual(alpha.warnings, []);
   assert.equal(alpha.projects.length, 1);
-  assert.equal(alpha.projects[0].share, 1);
+  // Drilling into a project must keep its share of the whole window (2 / 20),
+  // not collapse to 100% of the filtered slice.
+  assert.ok(Math.abs(alpha.projects[0].share - 0.1) < 1e-12);
+  assert.ok(Math.abs(global.attributedCost - 20) < 1e-12);
+  assert.ok(Math.abs(global.projects.find((p) => p.key === filterBeta.key).share - 0.9) < 1e-12);
   assert.equal(global.selectedProject, null);
   assert.deepEqual(aggregateTurns(turns, { now, project: '' }).selectedProject, null);
   const unknown = aggregateTurns(turns, { now, days: 7, project: '/missing' });
@@ -481,6 +485,12 @@ test('snapshot caches isolate project and window while wallet and global spend s
   assert.equal(global.today.ledger, 99);
   assert.equal(alpha.today.ledger, undefined);
   assert.deepEqual(alpha.projectOptions, global.projects);
+  // The /data path filters turns before aggregating; its project row must still
+  // report the same share of the whole window as the global table.
+  assert.equal(
+    alpha.projects[0].share,
+    global.projects.find((project) => project.key === filterAlpha.key).share,
+  );
   assert.strictEqual(buildSnapshot({ now: now + 1, days: 7, project: filterAlpha.key }), alpha);
   assert.strictEqual(buildSnapshot({ now: now + 1, days: 7, project: filterBeta.key }), beta);
   assert.strictEqual(buildSnapshot({ now: now + 1, days: 7 }), global);
