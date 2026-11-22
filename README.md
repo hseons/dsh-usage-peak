@@ -28,7 +28,7 @@
 - **导出 CSV**：每日数据与项目数据都能导出（UTF-8 BOM，Excel 直接打开不乱码；单元格做了公式注入防护）。
 - **价目表**：当前时段那一行高亮，方便解释账单；下方可编辑 Flash / Pro 的缓存命中、输入、输出单价（谷 / 峰），保存后所有金额与 CSV 立即按新价目重算，只存在当前浏览器，可一键恢复默认。
 - **按请求开始时刻计价**：会话日志里一条回复可能跨过切价点，峰谷按第一个流式 chunk 的时间判断，而不是回复完成时间。
-- **节假日与调休**：按国务院办公厅公布的安排判断——法定节假日全天谷时，调休上班的周末按工作日峰谷计算；当前覆盖 2026–2027 年，缺失年份会在面板给出提示并回落到周一至周五规则。
+- **节假日与调休**：按国务院办公厅公布的安排判断——法定节假日全天谷时，调休上班的周末按工作日峰谷计算；当前覆盖 2026–2027 年，缺失年份会在面板给出提示并回落到周一至周五规则。面板直接标注当前依据（「谷时 · 节假日」/「峰时 · 调休上班」），并给出节日名；峰谷倒计时会跨过整个长假，指向下一个真正的切价点。
 - **页脚**：GitHub 仓库链接（可顺手点个 Star）、当前版本号与日历覆盖年份。
 
 设置页里的入口是「用量仪表盘」，侧栏胶囊就是同一份数据的浓缩版。
@@ -42,7 +42,7 @@
 | DeepSeek Flash | 0.02 / 0.04 | 1 / 2 | 4 / 8 |
 | DeepSeek Pro | 0.15 / 0.30 | 4.5 / 9 | 13.5 / 27 |
 
-峰时 = 工作日 09:00–12:00、14:00–18:00（北京时间）；其余时间、周末与法定节假日为谷时。默认价目峰时单价是谷时的 2 倍；调休上班日（包括周末）按工作日的峰谷窗口计算。
+峰时 = 工作日 09:00–12:00、14:00–18:00（北京时间）；其余时间、周末与法定节假日为谷时。默认价目峰时单价是谷时的 2 倍；调休上班日（包括周末）按工作日的峰谷窗口计算。倒计时同样按日历计算，长假期间会直接指向假期结束后的第一个峰时。
 
 节假日数据在 [`holidays.js`](holidays.js)，来源为国务院办公厅 [2026 年](https://www.gov.cn/zhengce/zhengceku/202511/content_7047091.htm)、[2027 年](https://www.gov.cn/zhengce/zhengceku/202611/content_7085102.htm) 放假安排通知，并与 [holiday-cn](https://github.com/NateScarlet/holiday-cn) 交叉核对。新一年安排公布后，补一组日期并把年份加进 `CALENDAR_YEARS` 即可。
 
@@ -102,7 +102,7 @@ A usage and cost dashboard for DeepSeek Harness. It reads the local session logs
 - a persistent sidebar pill with peak/valley state, today's spend, tokens and the countdown to the next price switch; the pill turns amber when the balance runway is under 7 days and red under 3 days;
 - request-start billing: peak/valley is decided by the first stream chunk of a reply, not by its completion time;
 - an editable Flash/Pro price list (cache hit, input, output, valley/peak). Saved prices apply to every figure and CSV immediately, live only in this browser, and can be reset to the defaults;
-- China public holidays and makeup workdays: holidays are valley all day, makeup weekend workdays follow the weekday windows (2026–2027 calendars shipped; missing years fall back to Mon-Fri with a visible warning);
+- China public holidays and makeup workdays: holidays are valley all day, makeup weekend workdays follow the weekday windows (2026–2027 calendars shipped; missing years fall back to Mon-Fri with a visible warning). The pill labels the rule in force (`Valley · holiday`, `Peak · makeup workday`), and the countdown crosses entire breaks to the next real switch;
 - a footer with the GitHub repository link, the running version and the covered calendar years;
 - a details page (Settings → Usage dashboard) with KPIs (including balance runway), an hourly breakdown, cost composition, a 7/14/30-day trend switch, spend by project, a per-model table, CSV export and the price list;
 - hover or keyboard focus on the hourly/daily charts for that bucket's spend, requests, tokens and cache-hit rate (arrows/Home/End to browse, Esc to close), with a clamped tooltip that fits narrow panels;

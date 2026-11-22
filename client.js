@@ -47,6 +47,10 @@ window.__ModuleLoader__.load({
 
         'status.peak': '峰时',
         'status.valley': '谷时',
+        'status.holiday': '节假日',
+        'status.makeup': '调休上班',
+        'status.holidayTip': '法定节假日，全天按谷时计价',
+        'status.makeupTip': '调休上班日，按工作日峰谷时段计价',
         'status.switchIn': '距转',
 
         'fmt.lang': 'zh',
@@ -178,6 +182,10 @@ window.__ModuleLoader__.load({
 
         'status.peak': 'Peak',
         'status.valley': 'Valley',
+        'status.holiday': 'holiday',
+        'status.makeup': 'makeup workday',
+        'status.holidayTip': 'public holiday — valley tariff all day',
+        'status.makeupTip': 'makeup workday — weekday peak/valley windows',
         'status.switchIn': 'in',
 
         'fmt.lang': 'en',
@@ -524,6 +532,28 @@ window.__ModuleLoader__.load({
       return alertActive ? `⚠ ${switchText}` : switchText;
     }
 
+    /**
+     * Status wording for the pills. A public holiday is valley all day, a
+     * makeup workday follows the weekday windows even on a weekend, and the
+     * pill says which rule produced the current tariff.
+     */
+    function statusLabel(data, t) {
+      if (!data || !data.now) return t('widget.loading');
+      const now = data.now;
+      if (!now.peak && now.holiday) return `${t('status.valley')} · ${t('status.holiday')}`;
+      if (now.peak && now.makeup) return `${t('status.peak')} · ${t('status.makeup')}`;
+      return now.peak ? t('status.peak') : t('status.valley');
+    }
+
+    /** Tooltip explaining why today is a holiday / makeup workday. */
+    function statusTip(data, t) {
+      const now = data && data.now;
+      if (!now) return '';
+      if (!now.peak && now.holiday) return `${now.holiday} · ${t('status.holidayTip')}`;
+      if (now.makeup) return `${now.makeup} · ${t('status.makeupTip')}`;
+      return '';
+    }
+
     /** Clamp a tooltip's left edge so it stays inside its chart box. */
     function tipAnchor(center, tipWidth, boxWidth, inset = 4) {
       const limit = Math.max(inset, boxWidth - tipWidth - inset);
@@ -643,8 +673,9 @@ window.__ModuleLoader__.load({
       const peak = data ? data.now.peak : null;
       const loading = !data;
       const tone = loading ? C.text3 : peak ? C.peak : C.valley;
-      const word = loading ? t('widget.loading') : peak ? t('widget.peak') : t('widget.valley');
-      const short = word.slice(0, 1) === '峰' ? '峰' : word.slice(0, 1) === '谷' ? '谷' : word;
+      const word = loading ? t('widget.loading') : statusLabel(data, t);
+      const english = t('fmt.lang') === 'en';
+      const short = loading ? word : peak ? (english ? 'P' : '峰') : (english ? 'V' : '谷');
       const wallet = data && data.wallet ? data.wallet : null;
       const prefs = usePreferences();
       const alert = alertState(data, prefs);
@@ -662,7 +693,7 @@ window.__ModuleLoader__.load({
           ? `${t('kpi.balance')} ${yuan(wallet.balance)}${walletText ? ` · ${walletText}` : ''}`
           : walletText;
       const tip = data
-        ? `${word} · ${t('widget.today')} ${yuan(today)} · ${tokens(data.today ? data.today.tokens : 0, t)} tokens · ${t('status.switchIn')} ${switchText}${walletTip ? ` · ${walletTip}` : ''}`
+        ? `${word} · ${t('widget.today')} ${yuan(today)} · ${tokens(data.today ? data.today.tokens : 0, t)} tokens · ${t('status.switchIn')} ${switchText}${walletTip ? ` · ${walletTip}` : ''}${statusTip(data, t) ? ` · ${statusTip(data, t)}` : ''}`
         : word;
 
       // The seat is the shell's own flex row: the root takes a whole line (see
@@ -1489,18 +1520,24 @@ window.__ModuleLoader__.load({
             { key: 'pills', style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
             h(
               Pill,
-              { style: { background: peakNow ? tint(C.peak) : tint(C.valley), borderColor: 'transparent' } },
+              {
+                style: { background: peakNow ? tint(C.peak) : tint(C.valley), borderColor: 'transparent' },
+                title: statusTip(data, t) || undefined,
+              },
               h(Dot, { tone: peakNow ? C.peak : C.valley, glow: true }),
               h(
                 'span',
                 { style: { color: peakNow ? C.peak : C.valley, fontWeight: 600 } },
-                peakNow ? t('status.peak') : t('status.valley'),
+                statusLabel(data, t),
               ),
               h(Sep),
               h('span', { style: { color: C.text } }, yuan(today.cost)),
               h(Sep),
               h('span', { style: { color: C.text3 } }, `${t('status.switchIn')} ${switchText}`),
             ),
+            statusTip(data, t)
+              ? h('span', { style: { color: C.text3, fontSize: 11 } }, statusTip(data, t))
+              : null,
             h(
               Pill,
               {

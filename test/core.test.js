@@ -14,6 +14,7 @@ import {
   decodeSessionFile,
   emptyDay,
   encodePricing,
+  holidayAt,
   isPeakAt,
   normalizePricing,
   parsePricingParam,
@@ -75,6 +76,27 @@ test('nextSwitch skips holiday blocks and honors makeup workdays', () => {
   const makeup = nextSwitch(bj(2026, 9, 19, 10, 0));
   assert.equal(makeup.at, bj(2026, 9, 20, 9, 0));
   assert.equal(makeup.status, 'peak');
+});
+
+test('nextSwitch reaches past a nine-day Spring Festival block', () => {
+  // 2026: Feb 15-23 off. Feb 14 (Sat) is a makeup workday ending at 18:00.
+  // The next peak is Tuesday Feb 24, not a fake switch one hour later.
+  const afterChunjie2026 = nextSwitch(bj(2026, 2, 14, 18, 0));
+  assert.equal(afterChunjie2026.at, bj(2026, 2, 24, 9, 0));
+  assert.equal(afterChunjie2026.status, 'peak');
+  // From inside the break (Feb 23 is still a holiday) the same target holds.
+  assert.equal(nextSwitch(bj(2026, 2, 23, 8, 0)).at, bj(2026, 2, 24, 9, 0));
+
+  // 2027: Feb 5-13 off, Feb 14 (Sun) is a makeup workday, so it is the target.
+  const afterChunjie2027 = nextSwitch(bj(2027, 2, 4, 18, 0));
+  assert.equal(afterChunjie2027.at, bj(2027, 2, 14, 9, 0));
+  assert.equal(afterChunjie2027.status, 'peak');
+});
+
+test('holidayAt exposes the rule behind the current tariff', () => {
+  assert.deepEqual(holidayAt(bj(2026, 10, 1, 10, 0)), { day: '2026-10-01', holiday: '国庆节', makeup: null });
+  assert.deepEqual(holidayAt(bj(2026, 2, 14, 10, 0)), { day: '2026-02-14', holiday: null, makeup: '春节' });
+  assert.deepEqual(holidayAt(bj(2026, 11, 9, 10, 0)), { day: '2026-11-09', holiday: null, makeup: null });
 });
 
 test('aggregateTurns tags holiday days in the window', () => {
@@ -502,6 +524,28 @@ function routeHarness(rejection) {
     },
   };
 }
+
+test('snapshot exposes the current holiday and makeup workday for the panel', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'usage-calendar-'));
+  t.mock.method(os, 'homedir', () => dir);
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const holiday = buildSnapshot({ now: bj(2026, 10, 1, 10, 0), days: 7, fresh: true });
+  assert.equal(holiday.now.peak, false);
+  assert.equal(holiday.now.holiday, '国庆节');
+  assert.equal(holiday.now.makeup, null);
+  assert.equal(holiday.now.nextAt, bj(2026, 10, 8, 9, 0));
+
+  const makeup = buildSnapshot({ now: bj(2026, 2, 14, 10, 0), days: 7, fresh: true });
+  assert.equal(makeup.now.peak, true);
+  assert.equal(makeup.now.holiday, null);
+  assert.equal(makeup.now.makeup, '春节');
+
+  const plain = buildSnapshot({ now: bj(2026, 11, 9, 10, 0), days: 7, fresh: true });
+  assert.equal(plain.now.peak, true);
+  assert.equal(plain.now.holiday, null);
+  assert.equal(plain.now.makeup, null);
+});
 
 test('HTTP data and CSV routes decode project once, filter exports, and preserve BOM', async (t) => {
   const { now } = snapshotFixture(t);

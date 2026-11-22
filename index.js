@@ -140,13 +140,30 @@ export function isPeakAt(ts) {
   return (minutes >= 540 && minutes < 720) || (minutes >= 840 && minutes < 1080);
 }
 
-/** Next tariff switch after `ts`, with the status it switches into. */
+/** Holiday context for a timestamp: public holiday name or makeup workday. */
+export function holidayAt(ts) {
+  const key = dayKey(ts);
+  return {
+    day: key,
+    holiday: OFF_DAYS.get(key) || null,
+    makeup: WORKDAYS.get(key) || null,
+  };
+}
+
+/**
+ * Next tariff switch after `ts`, with the status it switches into.
+ *
+ * The horizon is 32 days: the longest shipped break (Spring Festival, 9 off
+ * days) plus the surrounding makeup workdays still has to reach the next
+ * ordinary working day. A 9-day horizon used to fall off the end of Spring
+ * Festival and invent a switch one hour later.
+ */
 export function nextSwitch(ts) {
   const d = bjDate(ts);
   const y = d.getUTCFullYear();
   const mo = d.getUTCMonth();
   const da = d.getUTCDate();
-  for (let k = 0; k < 9; k += 1) {
+  for (let k = 0; k < 32; k += 1) {
     const probe = new Date(Date.UTC(y, mo, da + k));
     const key = probe.toISOString().slice(0, 10);
     if (OFF_DAYS.has(key)) continue;
@@ -157,7 +174,9 @@ export function nextSwitch(ts) {
       if (at > ts) return { at, status: hour === 9 || hour === 14 ? 'peak' : 'valley' };
     }
   }
-  return { at: ts + 3600_000, status: 'valley' };
+  // Defensive only: no shipped calendar has a month without a working day.
+  const nextMorning = Date.UTC(y, mo, da + 1, 9, 0, 0) - BJ_OFFSET;
+  return nextMorning > ts ? { at: nextMorning, status: 'peak' } : { at: ts + 3600_000, status: 'valley' };
 }
 
 /* ------------------------------------------------------------------ */
@@ -674,6 +693,7 @@ export function buildSnapshot(options = {}) {
 
   const switchPoint = nextSwitch(now);
   const peakNow = isPeakAt(now);
+  const todayContext = holidayAt(now);
   const currentPrice = pricing[0];
 
   const payload = {
@@ -688,6 +708,8 @@ export function buildSnapshot(options = {}) {
       ts: now,
       day: dayKey(now),
       peak: peakNow,
+      holiday: todayContext.holiday,
+      makeup: todayContext.makeup,
       hour: bjDate(now).getUTCHours(),
       minutesIntoHour: bjDate(now).getUTCMinutes(),
       nextAt: switchPoint.at,

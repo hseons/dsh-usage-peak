@@ -10,7 +10,7 @@ function helpers(storage = {}) {
   const context = { window: { localStorage: storage, dispatchEvent: (event) => events.push(event) }, CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } }, C: { error: 'red', peak: 'amber', text3: 'gray' }, DATA_URL: '/data', DEFAULT_DAYS: 14 };
   const start = source.indexOf("    const PREFS_KEY =");
   const stop = source.indexOf('    function useFeed(', start);
-  vm.runInNewContext(source.slice(start, stop) + '\nthis.api = { validatePrefs, readPrefs, savePrefs, alertState, feedUrl, requestGate, tint, pillStatus, tipAnchor, validatePricing, readPricing, savePricing, encodePricing, pricingParam, clonePricing, DEFAULT_PRICING };', context);
+  vm.runInNewContext(source.slice(start, stop) + '\nthis.api = { validatePrefs, readPrefs, savePrefs, alertState, feedUrl, requestGate, tint, pillStatus, statusLabel, statusTip, tipAnchor, validatePricing, readPricing, savePricing, encodePricing, pricingParam, clonePricing, DEFAULT_PRICING };', context);
   return { ...context.api, events };
 }
 const plain = (value) => JSON.parse(JSON.stringify(value));
@@ -164,4 +164,26 @@ test('client feed URLs include only non-default pricing', () => {
   assert.equal(api.feedUrl('/data', 7, '', false, custom), `/data?days=7&pricing=${encodeURIComponent(encoded)}`);
   assert.equal(api.feedUrl('/data', 7, '', false, api.DEFAULT_PRICING), '/data?days=7');
   assert.equal(api.feedUrl('/data', 7, '', true, custom), `/data?days=7&pricing=${encodeURIComponent(encoded)}&fresh=1`);
+});
+
+test('client status labels a holiday valley and a makeup workday peak', () => {
+  const api = helpers();
+  const dict = {
+    'status.peak': '峰时',
+    'status.valley': '谷时',
+    'status.holiday': '节假日',
+    'status.makeup': '调休上班',
+    'status.holidayTip': '法定节假日，全天按谷时计价',
+    'status.makeupTip': '调休上班日，按工作日峰谷时段计价',
+    'widget.loading': '读取中',
+  };
+  const t = (key) => dict[key] || key;
+  assert.equal(api.statusLabel({ now: { peak: false, holiday: '国庆节', makeup: null } }, t), '谷时 · 节假日');
+  assert.equal(api.statusLabel({ now: { peak: true, holiday: null, makeup: '春节' } }, t), '峰时 · 调休上班');
+  assert.equal(api.statusLabel({ now: { peak: true, holiday: null, makeup: null } }, t), '峰时');
+  assert.equal(api.statusLabel({ now: { peak: false, holiday: null, makeup: null } }, t), '谷时');
+  assert.equal(api.statusLabel(null, t), '读取中');
+  assert.equal(api.statusTip({ now: { peak: false, holiday: '国庆节', makeup: null } }, t), '国庆节 · 法定节假日，全天按谷时计价');
+  assert.equal(api.statusTip({ now: { peak: true, holiday: null, makeup: '春节' } }, t), '春节 · 调休上班日，按工作日峰谷时段计价');
+  assert.equal(api.statusTip({ now: { peak: true, holiday: null, makeup: null } }, t), '');
 });
