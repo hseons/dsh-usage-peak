@@ -34,8 +34,12 @@ const bj = (y, mo, d, h, mi = 0) => Date.UTC(y, mo - 1, d, h, mi) - 8 * 3600_000
 test('priceFor picks the pro table only for pro models', () => {
   assert.equal(priceFor('deepseek-flash').id, 'flash');
   assert.equal(priceFor('deepseek-pro').id, 'pro');
-  assert.equal(priceFor('some-unknown-model').id, 'flash');
-  assert.equal(priceFor(undefined).id, 'flash');
+  const unknown = priceFor('some-unknown-model');
+  assert.equal(unknown.id, 'other');
+  assert.equal(unknown.fallback, true);
+  // Still estimated at Flash rates so totals do not collapse to zero.
+  assert.deepEqual(unknown.out, priceFor('deepseek-flash').out);
+  assert.equal(priceFor(undefined).id, 'other');
 });
 
 test('isPeakAt covers the four weekday windows and nothing else', () => {
@@ -244,10 +248,23 @@ test('aggregateTurns sums per-window models and flags unknown models once', () =
 
   const agg = aggregateTurns(turns, { now, days: 7 });
   assert.deepEqual(agg.models.map((model) => [model.id, model.calls]), [
-    ['flash', 2],
+    ['flash', 1],
     ['pro', 1],
+    ['other', 1],
   ]);
+  // The unknown call is its own row, flagged as an estimate, and stays out of Flash.
+  const other = agg.models.find((model) => model.id === 'other');
+  assert.equal(other.estimated, true);
+  assert.equal(other.cost, 8); // 1M output tokens at Flash peak output rate
+  assert.equal(agg.models.find((model) => model.id === 'flash').calls, 1);
+  // Totals still include the estimate rather than dropping it.
+  assert.equal(agg.today.cost, 2 + 9 + 8);
   assert.deepEqual(agg.warnings, [{ code: 'unknown-model', models: ['mystery-model'] }]);
+
+  // No unknown traffic in the window => no phantom "other" row.
+  const clean = aggregateTurns(turns.slice(0, 2), { now, days: 7 });
+  assert.deepEqual(clean.models.map((model) => model.id), ['flash', 'pro']);
+  assert.deepEqual(clean.warnings, []);
 
   // Windows that end before the turns contain only zero days.
   const old = aggregateTurns(turns, { now, days: 30 });

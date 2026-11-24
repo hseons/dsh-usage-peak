@@ -107,13 +107,19 @@ export function resolvePricing(raw) {
   return { pricing: clonePricing(PRICING), custom: false, invalid: supplied };
 }
 
+export const UNKNOWN_PRICE_ID = 'other';
+
 export function priceFor(model, pricing = PRICING) {
   const name = String(model || '').toLowerCase();
   // Pro wins over flash when both substrings appear; iterate from the pro end.
   for (let index = pricing.length - 1; index >= 0; index -= 1) {
     if (name.includes(pricing[index].match)) return pricing[index];
   }
-  return pricing[0] || PRICING[0];
+  // Unrecognised model names keep the Flash rates as a best-effort estimate,
+  // but land in their own bucket: folding them into Flash would silently claim
+  // a precision we do not have and hide third-party models from the table.
+  const base = pricing[0] || PRICING[0];
+  return { ...base, id: UNKNOWN_PRICE_ID, label: 'Other', fallback: true };
 }
 
 export function bjDate(ts) {
@@ -425,7 +431,7 @@ export function addTurn(day, turn, pricing = PRICING) {
   slot.cost += cost;
   slot.tokens += turn.input + turn.cache + turn.output;
 
-  return { cost, peak, tokens: turn.input + turn.cache + turn.output };
+  return { cost, peak, tokens: turn.input + turn.cache + turn.output, unknown: price.fallback === true };
 }
 
 export function readLedger() {
@@ -574,7 +580,7 @@ export function aggregateTurns(turns, options = {}) {
       byDay.set(key, day);
     }
     const priced = addTurn(day, turn, pricing);
-    if (!/flash|pro/i.test(turn.model)) unknownModels.add(turn.model);
+    if (priced.unknown) unknownModels.add(turn.model || 'unknown');
     if (turn.project && turn.project.key) {
       let project = byProject.get(turn.project.key);
       if (!project) {
@@ -635,6 +641,20 @@ export function aggregateTurns(turns, options = {}) {
     }
     return { id: price.id, label: price.label, calls, cost: round(cost), tokens };
   });
+
+  // Third-party / renamed models: their own row, flagged as an estimate so the
+  // total never reads as if those calls were DeepSeek Flash.
+  const otherSlots = window.map((entry) => entry.models[UNKNOWN_PRICE_ID]).filter(Boolean);
+  if (otherSlots.length > 0) {
+    models.push({
+      id: UNKNOWN_PRICE_ID,
+      label: 'Other',
+      calls: otherSlots.reduce((sum, slot) => sum + slot.calls, 0),
+      cost: round(otherSlots.reduce((sum, slot) => sum + slot.cost, 0)),
+      tokens: otherSlots.reduce((sum, slot) => sum + slot.tokens, 0),
+      estimated: true,
+    });
+  }
 
   const shareTotal = shareBase !== null ? shareBase : attributedCost;
   const projects = [...byProject.values()]
