@@ -111,9 +111,15 @@ export const UNKNOWN_PRICE_ID = 'other';
 
 export function priceFor(model, pricing = PRICING) {
   const name = String(model || '').toLowerCase();
+  // A bare substring test is too eager: `gemini-2.5-flash` and `gpt-5-pro` are
+  // other vendors' models and would silently inherit a DeepSeek tariff. Only
+  // DeepSeek's own names may match on substring; anything else has to equal the
+  // alias exactly (`flash`, `pro`) to keep hand-written tables working.
+  const deepseek = name.includes('deepseek');
   // Pro wins over flash when both substrings appear; iterate from the pro end.
   for (let index = pricing.length - 1; index >= 0; index -= 1) {
-    if (name.includes(pricing[index].match)) return pricing[index];
+    const match = pricing[index].match;
+    if (deepseek ? name.includes(match) : name === match) return pricing[index];
   }
   // Unrecognised model names keep the Flash rates as a best-effort estimate,
   // but land in their own bucket: folding them into Flash would silently claim

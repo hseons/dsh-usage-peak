@@ -57,6 +57,7 @@ window.__ModuleLoader__.load({
         'unit.calls': '次',
         'unit.minute': '分',
         'warn.unknownModel': '未识别的模型已单列在「其他」，按 Flash 单价估算',
+        'warn.unknownMore': '等 {n} 个',
         'warn.pricingInvalid': '自定义价目参数无效，已回退默认价目',
         'warn.calendarMissing': '以下年份还没有节假日数据，峰谷按周一至周五计算：',
         'footer.calendar': '峰谷已计入节假日与调休：',
@@ -194,6 +195,7 @@ window.__ModuleLoader__.load({
         'unit.calls': 'req',
         'unit.minute': 'm',
         'warn.unknownModel': 'Unknown models are listed under “Other” and estimated at Flash rates',
+        'warn.unknownMore': 'and {n} more',
         'warn.pricingInvalid': 'Invalid custom pricing; reverted to the default price list',
         'warn.calendarMissing': 'No holiday data for these years, peak hours fall back to Mon-Fri:',
         'footer.calendar': 'Peak hours include holidays and makeup workdays:',
@@ -321,8 +323,7 @@ window.__ModuleLoader__.load({
         : `¥${Number(value).toFixed(digits === undefined ? 2 : digits)}`;
 
     /** Token count with the locale's own magnitude words: 1.2 万 / 1.2K. */
-    function tokens(value, t) {
-      if (!value) return '0';
+    function tokens(value, t) {      if (!value) return '0';
       const english = typeof t === 'function' && t('fmt.lang') === 'en';
       if (english) {
         if (value >= 1e9) return `${(value / 1e9).toFixed(2)}B`;
@@ -333,6 +334,20 @@ window.__ModuleLoader__.load({
       if (value >= 1e8) return `${(value / 1e8).toFixed(2)} 亿`;
       if (value >= 1e4) return `${(value / 1e4).toFixed(1)} 万`;
       return String(Math.round(value));
+    }
+
+    /**
+     * The unknown-model banner is one line inside a card: a user running many
+     * third-party models would stretch it past the panel width. Show the first
+     * few names, count the rest, and keep the full list in the tooltip.
+     */
+    const WARN_NAME_LIMIT = 3;
+    function summarizeNames(names, t) {
+      const list = (Array.isArray(names) ? names : []).filter((name) => typeof name === 'string' && name !== '');
+      if (!list.length) return '';
+      const head = list.slice(0, WARN_NAME_LIMIT).join(', ');
+      if (list.length <= WARN_NAME_LIMIT) return head;
+      return `${head} ${t('warn.unknownMore').replace('{n}', String(list.length - WARN_NAME_LIMIT))}`;
     }
 
     /** Ultra compact for the pill: 1.2B / 12.8M / 942K. */
@@ -1581,11 +1596,16 @@ window.__ModuleLoader__.load({
               data.warnings.map((warning, index) =>
                 h(
                   'span',
-                  { key: index, style: { fontSize: 11.5, color: C.text2 } },
+                  {
+                    key: index,
+                    style: { fontSize: 11.5, color: C.text2, overflowWrap: 'anywhere' },
+                    title:
+                      warning && warning.code === 'unknown-model' ? (warning.models || []).join(', ') : undefined,
+                  },
                   typeof warning === 'string'
                     ? warning
                     : warning.code === 'unknown-model'
-                      ? `${t('warn.unknownModel')}: ${(warning.models || []).join(', ')}`
+                      ? `${t('warn.unknownModel')}: ${summarizeNames(warning.models, t)}`
                       : warning.code === 'pricing-invalid'
                         ? t('warn.pricingInvalid')
                         : warning.code === 'calendar-missing'

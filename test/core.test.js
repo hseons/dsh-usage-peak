@@ -40,6 +40,18 @@ test('priceFor picks the pro table only for pro models', () => {
   // Still estimated at Flash rates so totals do not collapse to zero.
   assert.deepEqual(unknown.out, priceFor('deepseek-flash').out);
   assert.equal(priceFor(undefined).id, 'other');
+
+  // Other vendors use the same words: their models must not inherit a DeepSeek
+  // tariff just because the name contains "flash" or "pro".
+  assert.equal(priceFor('gemini-2.5-flash').id, 'other');
+  assert.equal(priceFor('gpt-5-pro').id, 'other');
+  assert.equal(priceFor('claude-flash-pro').id, 'other');
+  // DeepSeek's own names keep matching by substring, including versioned ones.
+  assert.equal(priceFor('deepseek-v4-pro').id, 'pro');
+  assert.equal(priceFor('DeepSeek-V4.1-Flash').id, 'flash');
+  // A bare alias still resolves, for hand-written tables and older log names.
+  assert.equal(priceFor('flash').id, 'flash');
+  assert.equal(priceFor('pro').id, 'pro');
 });
 
 test('isPeakAt covers the four weekday windows and nothing else', () => {
@@ -260,6 +272,18 @@ test('aggregateTurns sums per-window models and flags unknown models once', () =
   // Totals still include the estimate rather than dropping it.
   assert.equal(agg.today.cost, 2 + 9 + 8);
   assert.deepEqual(agg.warnings, [{ code: 'unknown-model', models: ['mystery-model'] }]);
+
+  // A third-party model whose name merely contains "flash" stays in Other too.
+  const foreign = aggregateTurns(
+    [
+      { t: bj(2026, 11, 10, 9, 0), model: 'deepseek-flash', input: 1e6, cache: 0, output: 0 },
+      { t: bj(2026, 11, 10, 9, 1), model: 'gemini-2.5-flash', input: 0, cache: 0, output: 1e6 },
+    ],
+    { now, days: 7 },
+  );
+  assert.equal(foreign.models.find((model) => model.id === 'flash').calls, 1);
+  assert.equal(foreign.models.find((model) => model.id === 'other').calls, 1);
+  assert.deepEqual(foreign.warnings, [{ code: 'unknown-model', models: ['gemini-2.5-flash'] }]);
 
   // No unknown traffic in the window => no phantom "other" row.
   const clean = aggregateTurns(turns.slice(0, 2), { now, days: 7 });

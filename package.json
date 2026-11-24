@@ -1,6 +1,6 @@
 {
   "name": "dsh-usage-peak",
-  "version": "1.6.6",
+  "version": "1.6.7",
   "type": "module",
   "description": "DeepSeek Harness 用量峰谷仪表盘：峰/谷时段（含节假日与调休）、按请求开始时刻计价、自定义价目表、今日花费与 tokens、项目下钻/模型统计、可配置预算预警、余额可撑天数、CSV 导出、7/14/30 天窗口、缓存命中、谷时更省，侧栏常驻胶囊 + 设置页详情。",
   "exports": {
